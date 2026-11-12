@@ -1,0 +1,6 @@
+{
+  "name": "BNHS Library Portal",
+  "description": "Barobo National High School Centralized Online Library Management System for Book Catalog, Borrowing & Returning, Digital Library, and Analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

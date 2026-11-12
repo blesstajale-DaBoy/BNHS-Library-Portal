@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      (function () {
+        if (typeof window === 'undefined' || !window.WebSocket) return;
+        var NativeWebSocket = window.WebSocket;
+        if (NativeWebSocket.__bnhsSafeWrapped) return;
+        function SafeWebSocket(url, protocols) {
+          var protoStr = Array.isArray(protocols) ? protocols.join(',') : String(protocols || '');
+          var urlStr = String(url || '');
+          if (protoStr.indexOf('vite') !== -1 || urlStr.indexOf('token=') !== -1) {
+            var target = new EventTarget();
+            target.url = urlStr;
+            target.protocol = protoStr;
+            target.readyState = 1;
+            target.bufferedAmount = 0;
+            target.extensions = '';
+            target.binaryType = 'blob';
+            target.send = function () {};
+            target.close = function () { target.readyState = 3; };
+            setTimeout(function () {
+              var openEvt = new Event('open');
+              if (typeof target.onopen === 'function') target.onopen(openEvt);
+              target.dispatchEvent(openEvt);
+            }, 0);
+            return target;
+          }
+          return protocols !== undefined
+            ? new NativeWebSocket(url, protocols)
+            : new NativeWebSocket(url);
+        }
+        SafeWebSocket.prototype = NativeWebSocket.prototype;
+        SafeWebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+        SafeWebSocket.OPEN = NativeWebSocket.OPEN;
+        SafeWebSocket.CLOSING = NativeWebSocket.CLOSING;
+        SafeWebSocket.CLOSED = NativeWebSocket.CLOSED;
+        SafeWebSocket.__bnhsSafeWrapped = true;
+        window.WebSocket = SafeWebSocket;
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Barobo National High School (BNHS) Library Portal developed by: Bless T. Tajale</title>
+    <meta name="description" content="Barobo National High School (BNHS) Library Portal developed by: Bless T. Tajale — Centralized Online Library Management System." />
+    <meta property="og:title" content="Barobo National High School (BNHS) Library Portal developed by: Bless T. Tajale" />
+    <meta property="og:description" content="Barobo National High School (BNHS) Library Portal developed by: Bless T. Tajale — Centralized Online Library Management System." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body class="bg-[#641526] text-white antialiased selection:bg-[#D4AF37] selection:text-[#3A0A14]">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
