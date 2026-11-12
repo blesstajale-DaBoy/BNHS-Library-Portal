@@ -583,6 +583,21 @@ async function safeGetOverviewPayload() {
     ]);
     fallbackPortalSettings = portalSettings;
     fallbackWaitlistRequests = waitlistRequests;
+    if (Array.isArray(data.users) && data.users.length > 0) {
+      fallbackUsers = data.users;
+    }
+    if (Array.isArray(data.books) && data.books.length > 0) {
+      fallbackBooks = data.books;
+    }
+    if (Array.isArray(data.categories) && data.categories.length > 0) {
+      fallbackCategories = data.categories;
+    }
+    if (Array.isArray(data.borrowRecords) && data.borrowRecords.length > 0) {
+      fallbackBorrows = data.borrowRecords;
+    }
+    if (Array.isArray(data.digitalResources) && data.digitalResources.length > 0) {
+      fallbackDigitalResources = data.digitalResources;
+    }
     return {
       ...data,
       portalSettings,
@@ -970,47 +985,98 @@ async function startServer() {
   app.patch('/api/users/:id/role', requireAuth, async (req: AuthRequest, res) => {
     const userId = Number(req.params.id);
     const { role, gradeOrDepartment } = req.body;
+    fallbackUsers = fallbackUsers.map((u) =>
+      u.id === userId
+        ? { ...u, role, ...(gradeOrDepartment ? { gradeOrDepartment } : {}) }
+        : u
+    );
     try {
       const updated = await updateUserRoleRecord(userId, role, gradeOrDepartment);
-      res.json({ user: updated });
+      if (updated) {
+        fallbackUsers = fallbackUsers.map((u) =>
+          u.id === userId ? { ...u, ...updated } : u
+        );
+      }
+      res.json({ user: updated || fallbackUsers.find((u) => u.id === userId) });
     } catch (_error) {
-      fallbackUsers = fallbackUsers.map((u) =>
-        u.id === userId
-          ? { ...u, role, ...(gradeOrDepartment ? { gradeOrDepartment } : {}) }
-          : u
-      );
       res.json({ user: fallbackUsers.find((u) => u.id === userId) });
     }
   });
 
   app.put('/api/users/:id', requireAuth, async (req: AuthRequest, res) => {
     const userId = Number(req.params.id);
+    const prevFallback = fallbackUsers.find(
+      (u) => u.id === userId || (req.body.uid && u.uid === req.body.uid)
+    );
+    fallbackUsers = fallbackUsers.map((u) =>
+      u.id === userId || (req.body.uid && u.uid === req.body.uid)
+        ? { ...u, ...req.body }
+        : u
+    );
+    if (
+      prevFallback &&
+      req.body.fullName &&
+      prevFallback.fullName !== req.body.fullName
+    ) {
+      fallbackBorrows = fallbackBorrows.map((r) =>
+        r.borrowerName === prevFallback.fullName
+          ? {
+              ...r,
+              borrowerName: req.body.fullName,
+              borrowerIdNumber: req.body.idNumber || r.borrowerIdNumber,
+            }
+          : r
+      );
+    }
     try {
       const updated = await updateUserRecord(userId, req.body);
-      res.json({ user: updated });
+      if (updated) {
+        fallbackUsers = fallbackUsers.map((u) =>
+          u.id === userId || u.id === updated.id || u.uid === updated.uid
+            ? { ...u, ...updated }
+            : u
+        );
+      }
+      res.json({
+        user:
+          updated ||
+          fallbackUsers.find(
+            (u) => u.id === userId || (req.body.uid && u.uid === req.body.uid)
+          ),
+      });
     } catch (_error) {
-      fallbackUsers = fallbackUsers.map((u) =>
-        u.id === userId ? { ...u, ...req.body } : u
-      );
-      res.json({ user: fallbackUsers.find((u) => u.id === userId) });
+      res.json({
+        user: fallbackUsers.find(
+          (u) => u.id === userId || (req.body.uid && u.uid === req.body.uid)
+        ),
+      });
     }
   });
 
   app.delete('/api/users/:id', requireAuth, async (req: AuthRequest, res) => {
     const userId = Number(req.params.id);
+    const targetUid =
+      (req.query.uid as string | undefined) ||
+      req.body?.uid ||
+      fallbackUsers.find((u) => u.id === userId)?.uid;
+    const deletedFallback = fallbackUsers.find(
+      (u) => u.id === userId || (targetUid && u.uid === targetUid)
+    );
+    fallbackUsers = fallbackUsers.filter(
+      (u) => u.id !== userId && (!targetUid || u.uid !== targetUid)
+    );
     try {
-      const deleted = await deleteUserRecord(userId);
-      res.json({ deleted });
+      const deleted = await deleteUserRecord(userId, targetUid);
+      res.json({ deleted: deleted || deletedFallback });
     } catch (_error) {
-      const deleted = fallbackUsers.find((u) => u.id === userId);
-      fallbackUsers = fallbackUsers.filter((u) => u.id !== userId);
-      res.json({ deleted });
+      res.json({ deleted: deletedFallback });
     }
   });
 
   app.post('/api/users', requireAuth, async (req: AuthRequest, res) => {
     try {
       const newUser = await createLibraryMemberRecord(req.body);
+      fallbackUsers = [newUser, ...fallbackUsers];
       res.status(201).json({ user: newUser });
     } catch (_error) {
       const newUser = {
@@ -1023,7 +1089,7 @@ async function startServer() {
         gradeOrDepartment: req.body.gradeOrDepartment,
         status: 'Active',
       };
-      fallbackUsers = [...fallbackUsers, newUser];
+      fallbackUsers = [newUser, ...fallbackUsers];
       res.status(201).json({ user: newUser });
     }
   });

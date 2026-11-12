@@ -105,7 +105,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       setFirebaseUser(user);
       if (user) {
         setIsSignedInAccount(true);
-        const mappedUser: LibraryUser = {
+        let savedProfile: LibraryUser | null = null;
+        try {
+          const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw) as LibraryUser;
+            if (parsed.uid === user.uid) {
+              savedProfile = parsed;
+            }
+          }
+        } catch {
+          // ignore
+        }
+        const mappedUser: LibraryUser = savedProfile || {
           id: 1,
           uid: user.uid,
           email: user.email || 'blesstajale@gmail.com',
@@ -236,7 +248,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const refreshProfile = (updatedUser: LibraryUser) => {
     setProfile(updatedUser);
-    setActiveRole(updatedUser.role);
+    try {
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(updatedUser));
+    } catch {
+      // ignore
+    }
   };
 
   const isAuthenticated = true;

@@ -8,6 +8,7 @@ import {
   History,
   BookmarkPlus,
   User,
+  Pencil,
 } from 'lucide-react';
 import {
   BookItem,
@@ -30,6 +31,7 @@ interface StudentMyLibraryViewProps {
   onOpenBorrowModal: (book?: BookItem) => void;
   onRequestBookReturnNotification: (book: BookItem) => void;
   onNavigateCatalog: () => void;
+  onEditStudentAccount: (student: LibraryUser) => void;
 }
 
 export const StudentMyLibraryView: React.FC<StudentMyLibraryViewProps> = ({
@@ -45,10 +47,11 @@ export const StudentMyLibraryView: React.FC<StudentMyLibraryViewProps> = ({
   onOpenBorrowModal,
   onRequestBookReturnNotification,
   onNavigateCatalog,
+  onEditStudentAccount,
 }) => {
-  const currentStudentProfile = studentUsers.find(
-    (u) => u.fullName === selectedStudentName
-  );
+  const currentStudentProfile =
+    studentUsers.find((u) => u.fullName === selectedStudentName) ||
+    studentUsers[0];
 
   const studentLoans = borrowRecords.filter(
     (r) =>
@@ -90,7 +93,7 @@ export const StudentMyLibraryView: React.FC<StudentMyLibraryViewProps> = ({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           <div className="flex items-center gap-2 bg-[#2D070F] border border-[#D4AF37]/40 rounded-lg px-3 py-1.5">
             <User className="h-3.5 w-3.5 text-[#D4AF37]" />
             <label
@@ -116,6 +119,17 @@ export const StudentMyLibraryView: React.FC<StudentMyLibraryViewProps> = ({
               ))}
             </select>
           </div>
+
+          {currentStudentProfile && (
+            <button
+              type="button"
+              onClick={() => onEditStudentAccount(currentStudentProfile)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[#D4AF37]/50 bg-[#3A0A14] px-3 py-2 text-xs font-semibold text-[#D4AF37] hover:bg-[#2b060e] hover:text-white transition-colors whitespace-nowrap shrink-0"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              Edit Student Name
+            </button>
+          )}
 
           <button
             onClick={() => onOpenBorrowModal()}

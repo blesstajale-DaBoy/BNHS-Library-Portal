@@ -24,6 +24,26 @@ export async function getOrCreateUser(
       return existing[0];
     }
 
+    const deletedUids = await getPortalSyncStateRecord<string[]>(
+      'deleted_user_uids',
+      []
+    );
+    if (deletedUids.includes(uid)) {
+      return {
+        id: 0,
+        uid,
+        email,
+        fullName:
+          displayName && displayName.trim().length > 0
+            ? displayName
+            : 'Bless T. Tajale',
+        role: 'Administrator',
+        idNumber: 'ADM-2026-0001',
+        gradeOrDepartment: 'Library & Information Services',
+        status: 'Active',
+      };
+    }
+
     const randomNum = Math.floor(1000 + Math.random() * 9000);
     const idNumber = `BNHS-2026-${randomNum}`;
     const fullName =
@@ -869,6 +889,7 @@ export async function updateUserRoleRecord(
 export async function updateUserRecord(
   userId: number,
   data: {
+    uid?: string;
     fullName: string;
     email: string;
     role: string;
@@ -878,19 +899,82 @@ export async function updateUserRecord(
   }
 ) {
   try {
-    const updated = await db
-      .update(users)
-      .set({
-        fullName: data.fullName,
-        email: data.email,
-        role: data.role,
-        idNumber: data.idNumber,
-        gradeOrDepartment: data.gradeOrDepartment,
-        status: data.status || 'Active',
-      })
-      .where(eq(users.id, userId))
-      .returning();
-    return updated[0];
+    let existingRows = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, userId));
+
+    if (existingRows.length === 0 && data.uid) {
+      existingRows = await db
+        .select()
+        .from(users)
+        .where(eq(users.uid, data.uid));
+    }
+
+    if (existingRows.length === 0 && data.idNumber) {
+      existingRows = await db
+        .select()
+        .from(users)
+        .where(eq(users.idNumber, data.idNumber));
+    }
+
+    const prevUser = existingRows[0];
+    const targetId = prevUser ? prevUser.id : userId;
+
+    let resultUser;
+    if (prevUser) {
+      const updated = await db
+        .update(users)
+        .set({
+          fullName: data.fullName.trim(),
+          email: data.email.trim(),
+          role: data.role,
+          idNumber: data.idNumber.trim(),
+          gradeOrDepartment: data.gradeOrDepartment.trim(),
+          status: data.status || 'Active',
+        })
+        .where(eq(users.id, targetId))
+        .returning();
+      resultUser = updated[0];
+    } else {
+      const uid = data.uid || `bnhs-member-${Date.now()}`;
+      const inserted = await db
+        .insert(users)
+        .values({
+          uid,
+          fullName: data.fullName.trim(),
+          email: data.email.trim(),
+          role: data.role,
+          idNumber: data.idNumber.trim(),
+          gradeOrDepartment: data.gradeOrDepartment.trim(),
+          status: data.status || 'Active',
+        })
+        .onConflictDoUpdate({
+          target: users.uid,
+          set: {
+            fullName: data.fullName.trim(),
+            email: data.email.trim(),
+            role: data.role,
+            idNumber: data.idNumber.trim(),
+            gradeOrDepartment: data.gradeOrDepartment.trim(),
+            status: data.status || 'Active',
+          },
+        })
+        .returning();
+      resultUser = inserted[0];
+    }
+
+    if (prevUser && prevUser.fullName !== data.fullName.trim()) {
+      await db
+        .update(borrowRecords)
+        .set({
+          borrowerName: data.fullName.trim(),
+          borrowerIdNumber: data.idNumber.trim(),
+        })
+        .where(eq(borrowRecords.borrowerName, prevUser.fullName));
+    }
+
+    return resultUser;
   } catch (error) {
     console.error('Database query failed in updateUserRecord:', error);
     throw new Error('Failed to update library user account.', {
@@ -899,13 +983,39 @@ export async function updateUserRecord(
   }
 }
 
-export async function deleteUserRecord(userId: number) {
+export async function deleteUserRecord(userId: number, uid?: string) {
   try {
+    let existingRows = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, userId));
+
+    if (existingRows.length === 0 && uid) {
+      existingRows = await db
+        .select()
+        .from(users)
+        .where(eq(users.uid, uid));
+    }
+
+    const target = existingRows[0];
+    if (target?.uid) {
+      const deletedUids = await getPortalSyncStateRecord<string[]>(
+        'deleted_user_uids',
+        []
+      );
+      if (!deletedUids.includes(target.uid)) {
+        await upsertPortalSyncStateRecord('deleted_user_uids', [
+          ...deletedUids,
+          target.uid,
+        ]);
+      }
+    }
+
     const deleted = await db
       .delete(users)
-      .where(eq(users.id, userId))
+      .where(eq(users.id, target ? target.id : userId))
       .returning();
-    return deleted[0];
+    return deleted[0] || target;
   } catch (error) {
     console.error('Database query failed in deleteUserRecord:', error);
     throw new Error('Failed to delete library user account.', {

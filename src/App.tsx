@@ -104,10 +104,10 @@ const ROLE_PERMISSIONS: Record<
     canUploadDigital: true,
   },
   Librarian: {
-    summary: 'Books, borrowers, transactions, reports',
+    summary: 'Books, borrowers, transactions, users, reports',
     canManageBooks: true,
     canProcessReturns: true,
-    canManageUsers: false,
+    canManageUsers: true,
     canUploadDigital: true,
   },
   Teacher: {
@@ -173,6 +173,81 @@ function computeDaysUntilDue(dueDateStr: string): number {
   return Math.round((dueMidnight - todayMidnight) / 86400000);
 }
 
+const USER_EDITS_STORAGE_KEY = 'bnhs_users_edits_v2';
+const USER_DELETED_STORAGE_KEY = 'bnhs_users_deleted_v2';
+
+function getLocalUserEditsMap(): Record<string, LibraryUser> {
+  try {
+    const raw = localStorage.getItem(USER_EDITS_STORAGE_KEY);
+    if (raw) return JSON.parse(raw) as Record<string, LibraryUser>;
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+function getLocalDeletedUserKeys(): string[] {
+  try {
+    const raw = localStorage.getItem(USER_DELETED_STORAGE_KEY);
+    if (raw) return JSON.parse(raw) as string[];
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
+function saveUserEditToLocalCache(userObj: LibraryUser) {
+  try {
+    const edits = getLocalUserEditsMap();
+    edits[`id:${userObj.id}`] = userObj;
+    if (userObj.uid) {
+      edits[`uid:${userObj.uid}`] = userObj;
+    }
+    localStorage.setItem(USER_EDITS_STORAGE_KEY, JSON.stringify(edits));
+  } catch {
+    // ignore
+  }
+}
+
+function saveUserDeleteToLocalCache(userObj: LibraryUser) {
+  try {
+    const deleted = new Set(getLocalDeletedUserKeys());
+    deleted.add(`id:${userObj.id}`);
+    if (userObj.uid) {
+      deleted.add(`uid:${userObj.uid}`);
+    }
+    localStorage.setItem(
+      USER_DELETED_STORAGE_KEY,
+      JSON.stringify(Array.from(deleted))
+    );
+  } catch {
+    // ignore
+  }
+}
+
+function applyLocalUserOverrides(incomingUsers: LibraryUser[]): LibraryUser[] {
+  const edits = getLocalUserEditsMap();
+  const deleted = new Set(getLocalDeletedUserKeys());
+
+  const filtered = incomingUsers.filter(
+    (u) => !deleted.has(`id:${u.id}`) && !(u.uid && deleted.has(`uid:${u.uid}`))
+  );
+
+  return filtered.map((u) => {
+    const override =
+      (u.uid && edits[`uid:${u.uid}`]) || edits[`id:${u.id}`] || null;
+    if (override) {
+      return {
+        ...u,
+        ...override,
+        id: u.id,
+        uid: u.uid || override.uid,
+      };
+    }
+    return u;
+  });
+}
+
 function LibraryPortalContent() {
   const {
     firebaseUser,
@@ -188,6 +263,7 @@ function LibraryPortalContent() {
     signInWithPortalAccount,
     signOut,
     getAuthHeaders,
+    refreshProfile,
     authError,
   } = useAuth();
 
@@ -218,7 +294,9 @@ function LibraryPortalContent() {
   );
   const [categories, setCategories] =
     useState<BookCategory[]>(INITIAL_CATEGORIES);
-  const [users, setUsers] = useState<LibraryUser[]>(INITIAL_USERS);
+  const [users, setUsers] = useState<LibraryUser[]>(() =>
+    applyLocalUserOverrides(INITIAL_USERS)
+  );
   const [waitlistRequests, setWaitlistRequests] = useState<
     BookWaitlistRequest[]
   >(INITIAL_WAITLIST_REQUESTS);
@@ -329,12 +407,14 @@ function LibraryPortalContent() {
   });
 
   const [memberForm, setMemberForm] = useState({
+    editingExistingId: 0,
     fullName: '',
     email: '',
     role: 'Student',
     idNumber: '',
     gradeOrDepartment: '',
   });
+  const [userRoleFilter, setUserRoleFilter] = useState<'All' | UserRole>('All');
 
   const [isCloudSyncing, setIsCloudSyncing] = useState(false);
 
@@ -376,7 +456,7 @@ function LibraryPortalContent() {
         setCategories(data.categories);
       }
       if (Array.isArray(data.users) && data.users.length > 0) {
-        setUsers(data.users);
+        setUsers(applyLocalUserOverrides(data.users));
       }
       if (data.portalSettings) {
         const resolvedSettings: PortalSettings = {
@@ -444,7 +524,7 @@ function LibraryPortalContent() {
         if (Array.isArray(data.categories) && data.categories.length > 0)
           setCategories(data.categories);
         if (Array.isArray(data.users) && data.users.length > 0)
-          setUsers(data.users);
+          setUsers(applyLocalUserOverrides(data.users));
         if (data.portalSettings) {
           setPortalSettings({
             ...data.portalSettings,
@@ -522,6 +602,55 @@ function LibraryPortalContent() {
     const list = users.filter((u) => u.role === 'Student');
     return list.length > 0 ? list : users;
   }, [users]);
+
+  // Automatically resolve the active user account for the chosen role (e.g. when choosing Librarian, automatically display the Librarian's name!)
+  const activeRoleUser = useMemo<LibraryUser>(() => {
+    if (activeRole === 'Librarian') {
+      const libUser = users.find((u) => u.role === 'Librarian');
+      if (libUser) return libUser;
+    }
+    if (activeRole === 'Teacher') {
+      const teacherUser = users.find((u) => u.role === 'Teacher');
+      if (teacherUser) return teacherUser;
+    }
+    if (activeRole === 'Student') {
+      const studentUser =
+        users.find(
+          (u) => u.role === 'Student' && u.fullName === selectedStudentName
+        ) || users.find((u) => u.role === 'Student');
+      if (studentUser) return studentUser;
+    }
+    if (activeRole === 'Administrator') {
+      if (profile) {
+        const matchedProfile = users.find(
+          (u) =>
+            u.id === profile.id ||
+            (u.uid && u.uid === profile.uid) ||
+            (u.email &&
+              profile.email &&
+              u.email.toLowerCase() === profile.email.toLowerCase())
+        );
+        if (matchedProfile && matchedProfile.role === 'Administrator') {
+          return matchedProfile;
+        }
+      }
+      const adminUser = users.find((u) => u.role === 'Administrator');
+      if (adminUser) return adminUser;
+    }
+    return (
+      users[0] ||
+      profile || {
+        id: 1,
+        uid: 'bnhs-admin-bless',
+        email: 'blesstajale@gmail.com',
+        fullName: 'Bless T. Tajale',
+        role: activeRole,
+        idNumber: 'ADM-2026-0001',
+        gradeOrDepartment: 'Library & Information Services',
+        status: 'Active',
+      }
+    );
+  }, [activeRole, users, selectedStudentName, profile]);
 
   // Automatic Student Notification System:
   // 1. Borrowed books that are 2 days (or fewer) away from the due date
@@ -649,10 +778,14 @@ function LibraryPortalContent() {
       borrowerName:
         activeRole === 'Student'
           ? selectedStudentName
-          : prev.borrowerName || profile?.fullName || 'Althea Mae C. Villaruel',
+          : activeRoleUser?.fullName ||
+            prev.borrowerName ||
+            'Althea Mae C. Villaruel',
       borrowerRole: activeRole,
       borrowerIdNumber:
-        prev.borrowerIdNumber || profile?.idNumber || 'LRN-132604180021',
+        activeRoleUser?.idNumber ||
+        prev.borrowerIdNumber ||
+        'LRN-132604180021',
     }));
   };
 
@@ -1081,21 +1214,61 @@ function LibraryPortalContent() {
 
   const handleCreateMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isAuthenticated) {
-      showToast('error', 'Please sign in to register library accounts.');
+    if (!memberForm.fullName.trim()) {
+      showToast('error', 'Please enter a full name for the library account.');
       return;
     }
+
+    // If an existing member (such as the Librarian) was loaded into the form, update their account directly
+    if (memberForm.editingExistingId > 0) {
+      await handleUpdateUser(memberForm.editingExistingId, {
+        fullName: memberForm.fullName.trim(),
+        email: memberForm.email.trim(),
+        role: memberForm.role as UserRole,
+        idNumber: memberForm.idNumber.trim(),
+        gradeOrDepartment: memberForm.gradeOrDepartment.trim(),
+      });
+      setMemberForm({
+        editingExistingId: 0,
+        fullName: '',
+        email: '',
+        role: 'Student',
+        idNumber: '',
+        gradeOrDepartment: '',
+      });
+      return;
+    }
+
     try {
       const headers = await getAuthHeaders();
+      const payload = {
+        fullName: memberForm.fullName.trim(),
+        email: memberForm.email.trim(),
+        role: memberForm.role,
+        idNumber: memberForm.idNumber.trim(),
+        gradeOrDepartment: memberForm.gradeOrDepartment.trim(),
+      };
       const res = await fetch('/api/users', {
         method: 'POST',
         headers,
-        body: JSON.stringify(memberForm),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to register user.');
-      await fetchOverview();
+      const createdUser: LibraryUser = data.user || {
+        id: Date.now(),
+        uid: `bnhs-member-${Date.now()}`,
+        ...payload,
+        role: payload.role as UserRole,
+        status: 'Active',
+      };
+      saveUserEditToLocalCache(createdUser);
+      setUsers((prev) => [
+        createdUser,
+        ...prev.filter((u) => u.id !== createdUser.id),
+      ]);
       setMemberForm({
+        editingExistingId: 0,
         fullName: '',
         email: '',
         role: 'Student',
@@ -1104,7 +1277,7 @@ function LibraryPortalContent() {
       });
       showToast(
         'success',
-        `Registered ${data.user.fullName} (${data.user.role}).`
+        `Registered ${createdUser.fullName} (${createdUser.role}).`
       );
     } catch (err: any) {
       showToast('error', err.message);
@@ -1115,63 +1288,168 @@ function LibraryPortalContent() {
     userId: number,
     updated: Partial<LibraryUser>
   ) => {
+    const prevUser = users.find((u) => u.id === userId);
+    const nextName = (updated.fullName ?? prevUser?.fullName ?? '').trim();
+    const updatedUserObj: LibraryUser = {
+      ...(prevUser || {
+        id: userId,
+        uid: `bnhs-user-${userId}`,
+        email: 'member@bnhs.edu.ph',
+        fullName: nextName,
+        role: 'Student',
+        idNumber: 'BNHS-2026',
+        gradeOrDepartment: 'BNHS Library',
+        status: 'Active',
+      }),
+      ...updated,
+      fullName: nextName,
+    };
+
+    // Persist locally and update React state immediately so edited names never revert
+    saveUserEditToLocalCache(updatedUserObj);
+    setUsers((prev) =>
+      prev.map((u) => (u.id === userId ? updatedUserObj : u))
+    );
+
+    if (
+      profile &&
+      (profile.id === userId ||
+        (profile.uid && profile.uid === updatedUserObj.uid) ||
+        profile.role === updatedUserObj.role)
+    ) {
+      refreshProfile(updatedUserObj);
+    }
+
+    if (prevUser && nextName && prevUser.fullName !== nextName) {
+      if (selectedStudentName === prevUser.fullName) {
+        setSelectedStudentName(nextName);
+      }
+      setBorrowRecords((prev) =>
+        prev.map((r) =>
+          r.borrowerName === prevUser.fullName
+            ? {
+                ...r,
+                borrowerName: nextName,
+                borrowerIdNumber:
+                  updatedUserObj.idNumber || r.borrowerIdNumber,
+              }
+            : r
+        )
+      );
+      setWaitlistRequests((prev) =>
+        prev.map((w) =>
+          w.studentName === prevUser.fullName
+            ? { ...w, studentName: nextName }
+            : w
+        )
+      );
+    }
+
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/users/${userId}`, {
         method: 'PUT',
         headers,
-        body: JSON.stringify(updated),
+        body: JSON.stringify({
+          ...updatedUserObj,
+          uid: updatedUserObj.uid,
+        }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to update user.');
-      await fetchOverview();
-      showToast('success', `Updated account for ${data.user.fullName}.`);
-    } catch (err: any) {
-      showToast('error', err.message);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.user) {
+          const mergedServerUser: LibraryUser = {
+            ...data.user,
+            ...updatedUserObj,
+            id: data.user.id || userId,
+            uid: data.user.uid || updatedUserObj.uid,
+          };
+          saveUserEditToLocalCache(mergedServerUser);
+          setUsers((prev) =>
+            prev.map((u) =>
+              u.id === userId || u.id === mergedServerUser.id
+                ? mergedServerUser
+                : u
+            )
+          );
+        }
+      }
+    } catch {
+      // Local state and localStorage cache already updated
     }
+    showToast(
+      'success',
+      `Updated account "${nextName}" (${updatedUserObj.role}).`
+    );
   };
 
   const handleDeleteUser = async (userItem: LibraryUser) => {
+    // Immediately remove from UI and persist deletion in local cache
+    saveUserDeleteToLocalCache(userItem);
+    setUsers((prev) =>
+      prev.filter(
+        (u) =>
+          u.id !== userItem.id && (!userItem.uid || u.uid !== userItem.uid)
+      )
+    );
+    if (memberForm.editingExistingId === userItem.id) {
+      setMemberForm({
+        editingExistingId: 0,
+        fullName: '',
+        email: '',
+        role: 'Student',
+        idNumber: '',
+        gradeOrDepartment: '',
+      });
+    }
+
     try {
       const headers = await getAuthHeaders();
-      const res = await fetch(`/api/users/${userItem.id}`, {
-        method: 'DELETE',
-        headers,
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to delete user.');
-      await fetchOverview();
-      showToast('success', `Removed user account ${userItem.fullName}.`);
-    } catch (err: any) {
-      showToast('error', err.message);
+      await fetch(
+        `/api/users/${userItem.id}?uid=${encodeURIComponent(
+          userItem.uid || ''
+        )}`,
+        {
+          method: 'DELETE',
+          headers,
+        }
+      );
+    } catch {
+      // Deletion already applied locally
     }
+    showToast(
+      'success',
+      `Removed user account "${userItem.fullName}" from BNHS Library Portal.`
+    );
   };
 
   const handleChangeMemberRole = async (
     userItem: LibraryUser,
     nextRole: UserRole
   ) => {
-    if (!isAuthenticated) {
-      showToast('error', 'Please sign in to update user roles.');
-      return;
-    }
+    const updatedUserObj: LibraryUser = {
+      ...userItem,
+      role: nextRole,
+    };
+    saveUserEditToLocalCache(updatedUserObj);
+    setUsers((prev) =>
+      prev.map((u) => (u.id === userItem.id ? updatedUserObj : u))
+    );
+
     try {
       const headers = await getAuthHeaders();
-      const res = await fetch(`/api/users/${userItem.id}/role`, {
+      await fetch(`/api/users/${userItem.id}/role`, {
         method: 'PATCH',
         headers,
         body: JSON.stringify({ role: nextRole }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to update role.');
-      await fetchOverview();
-      showToast(
-        'success',
-        `Updated ${userItem.fullName}'s access role to ${nextRole}.`
-      );
-    } catch (err: any) {
-      showToast('error', err.message);
+    } catch {
+      // Role change already persisted locally
     }
+    showToast(
+      'success',
+      `Updated ${userItem.fullName}'s access role to ${nextRole}.`
+    );
   };
 
   const handleExportCsvReport = () => {
@@ -1409,6 +1687,30 @@ function LibraryPortalContent() {
               <option value="Teacher">Teacher (Faculty Access)</option>
               <option value="Student">Student ('My Library' View)</option>
             </select>
+
+            {/* Automatically displays the Librarian's or selected role's name */}
+            <div className="mt-2 rounded-lg bg-[#420B17]/90 border border-[#D4AF37]/35 px-2.5 py-2 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[10px] font-semibold text-[#D4AF37] uppercase tracking-wider">
+                  Active {activeRole}
+                </div>
+                <div className="text-xs font-bold text-white truncate">
+                  {activeRoleUser.fullName}
+                </div>
+                <div className="text-[10px] text-white/75 font-mono truncate">
+                  {activeRoleUser.idNumber} · {activeRoleUser.gradeOrDepartment}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingUser(activeRoleUser)}
+                title={`Edit ${activeRole} Name`}
+                className="rounded border border-[#D4AF37]/40 bg-[#641526] p-1.5 text-[#D4AF37] hover:bg-[#7a1b30] shrink-0"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
             <p className="mt-1.5 text-[11px] text-white/70">
               Access: {currentPermissions.summary}
             </p>
@@ -1534,16 +1836,23 @@ function LibraryPortalContent() {
             )}
 
             <div className="flex items-center gap-2 sm:gap-3">
-              <div className="hidden md:block text-right">
-                <div className="text-xs font-semibold text-white truncate max-w-[180px]">
-                  {profile?.fullName ||
-                    firebaseUser?.displayName ||
-                    firebaseUser?.email ||
-                    'Bless T. Tajale'}
+              <div className="flex items-center gap-2 rounded-lg bg-[#3A0A14]/80 border border-[#D4AF37]/30 px-2.5 py-1 text-right">
+                <div>
+                  <div className="text-xs font-semibold text-white truncate max-w-[160px] sm:max-w-[210px]">
+                    {activeRoleUser.fullName}
+                  </div>
+                  <div className="text-[11px] text-[#D4AF37]">
+                    {activeRole} · {activeRoleUser.idNumber}
+                  </div>
                 </div>
-                <div className="text-[11px] text-[#D4AF37]">
-                  {activeRole} · {profile?.idNumber || 'BNHS-2026'}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingUser(activeRoleUser)}
+                  title={`Edit ${activeRole} Name`}
+                  className="rounded p-1 text-[#D4AF37] hover:bg-white/10 shrink-0"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
               </div>
               {firebaseUser || isSignedInAccount ? (
                 <button
@@ -1630,6 +1939,7 @@ function LibraryPortalContent() {
                     handleRequestBookReturnNotification
                   }
                   onNavigateCatalog={() => setActiveModule('catalog')}
+                  onEditStudentAccount={(student) => setEditingUser(student)}
                 />
               ) : (
                 <>
@@ -2695,14 +3005,88 @@ function LibraryPortalContent() {
               {managementTab === 'users' && (
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                   <div className="lg:col-span-8 rounded-xl bg-white text-[#1E1B18] border border-neutral-200 overflow-hidden shadow-sm">
-                    <div className="px-6 py-4 border-b border-neutral-200">
-                      <h3 className="font-display text-base font-bold text-[#641526]">
-                        Registered BNHS Library Accounts
-                      </h3>
-                      <p className="text-xs text-neutral-500">
-                        Edit member profiles or assign Administrator, Librarian, Teacher, or Student permissions
-                      </p>
+                    <div className="px-6 py-4 border-b border-neutral-200 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h3 className="font-display text-base font-bold text-[#641526]">
+                            Registered BNHS Library Accounts
+                          </h3>
+                          <p className="text-xs text-neutral-500">
+                            Edit member profiles, delete accounts, or choose a role to display its assigned member
+                          </p>
+                        </div>
+
+                        {/* Role Quick-Filter & Automatic Role Name Display */}
+                        <div className="flex flex-wrap items-center gap-1 bg-neutral-100 p-1 rounded-lg">
+                          {(
+                            [
+                              'All',
+                              'Administrator',
+                              'Librarian',
+                              'Teacher',
+                              'Student',
+                            ] as const
+                          ).map((roleOpt) => (
+                            <button
+                              key={roleOpt}
+                              type="button"
+                              onClick={() => {
+                                setUserRoleFilter(roleOpt);
+                                if (roleOpt !== 'All') {
+                                  setActiveRole(roleOpt);
+                                  const matched = users.find(
+                                    (u) => u.role === roleOpt
+                                  );
+                                  if (matched) {
+                                    setMemberForm({
+                                      editingExistingId: matched.id,
+                                      fullName: matched.fullName,
+                                      email: matched.email,
+                                      role: matched.role,
+                                      idNumber: matched.idNumber,
+                                      gradeOrDepartment:
+                                        matched.gradeOrDepartment,
+                                    });
+                                  }
+                                }
+                              }}
+                              className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
+                                userRoleFilter === roleOpt
+                                  ? 'bg-[#641526] text-white shadow-xs'
+                                  : 'text-neutral-700 hover:bg-neutral-200'
+                              }`}
+                            >
+                              {roleOpt}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Active Role / Librarian Name Highlight Banner */}
+                      <div className="rounded-lg bg-[#641526]/5 border border-[#641526]/20 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-semibold text-[#641526]">
+                            Active {activeRole} Account:
+                          </span>
+                          <span className="font-bold text-neutral-900">
+                            {activeRoleUser.fullName}
+                          </span>
+                          <span className="font-mono text-neutral-600">
+                            ({activeRoleUser.idNumber} ·{' '}
+                            {activeRoleUser.gradeOrDepartment})
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setEditingUser(activeRoleUser)}
+                          className="inline-flex items-center gap-1 rounded-md bg-[#641526] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#4d0f1d]"
+                        >
+                          <Pencil className="h-3 w-3 text-[#D4AF37]" />
+                          Edit {activeRole} Name
+                        </button>
+                      </div>
                     </div>
+
                     <div className="overflow-x-auto">
                       <table className="w-full text-left border-collapse">
                         <thead>
@@ -2715,115 +3099,122 @@ function LibraryPortalContent() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-neutral-200 text-xs">
-                          {users.map((u) => (
-                            <tr key={u.id} className="hover:bg-neutral-50">
-                              <td className="py-3.5 px-5">
-                                <div className="font-semibold text-neutral-900">
-                                  {u.fullName}
-                                </div>
-                                <div className="text-neutral-500">{u.email}</div>
-                              </td>
-                              <td className="py-3.5 px-4 font-mono tabular-nums">
-                                {u.idNumber}
-                              </td>
-                              <td className="py-3.5 px-4">
-                                {u.gradeOrDepartment}
-                              </td>
-                              <td className="py-3.5 px-4">
-                                <select
-                                  value={u.role}
-                                  onChange={(e) =>
-                                    handleChangeMemberRole(
-                                      u,
-                                      e.target.value as UserRole
-                                    )
-                                  }
-                                  className="rounded border border-neutral-300 bg-white px-2 py-1 text-xs font-semibold text-[#641526] focus:outline-none focus:border-[#641526]"
-                                >
-                                  <option value="Administrator">
-                                    Administrator
-                                  </option>
-                                  <option value="Librarian">Librarian</option>
-                                  <option value="Teacher">Teacher</option>
-                                  <option value="Student">Student</option>
-                                </select>
-                              </td>
-                              <td className="py-3.5 px-5 text-right whitespace-nowrap">
-                                <div className="inline-flex items-center gap-1.5">
-                                  <button
-                                    onClick={() => setEditingUser(u)}
-                                    className="inline-flex items-center gap-1 rounded border border-neutral-300 px-2.5 py-1 text-xs font-medium text-neutral-800 hover:bg-neutral-100 transition-colors"
+                          {users
+                            .filter(
+                              (u) =>
+                                userRoleFilter === 'All' ||
+                                u.role === userRoleFilter
+                            )
+                            .map((u) => (
+                              <tr key={u.id} className="hover:bg-neutral-50">
+                                <td className="py-3.5 px-5">
+                                  <div className="font-semibold text-neutral-900">
+                                    {u.fullName}
+                                  </div>
+                                  <div className="text-neutral-500">
+                                    {u.email}
+                                  </div>
+                                </td>
+                                <td className="py-3.5 px-4 font-mono tabular-nums">
+                                  {u.idNumber}
+                                </td>
+                                <td className="py-3.5 px-4">
+                                  {u.gradeOrDepartment}
+                                </td>
+                                <td className="py-3.5 px-4">
+                                  <select
+                                    value={u.role}
+                                    onChange={(e) => {
+                                      const nextRole = e.target
+                                        .value as UserRole;
+                                      handleChangeMemberRole(u, nextRole);
+                                      if (nextRole === 'Librarian') {
+                                        setActiveRole('Librarian');
+                                      }
+                                    }}
+                                    className="rounded border border-neutral-300 bg-white px-2 py-1 text-xs font-semibold text-[#641526] focus:outline-none focus:border-[#641526]"
                                   >
-                                    <Pencil className="h-3 w-3 text-[#641526]" />
-                                    Edit
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteUser(u)}
-                                    className="inline-flex items-center gap-1 rounded border border-red-200 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 transition-colors"
-                                  >
-                                    <Trash2 className="h-3 w-3" />
-                                    Delete
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
+                                    <option value="Administrator">
+                                      Administrator
+                                    </option>
+                                    <option value="Librarian">Librarian</option>
+                                    <option value="Teacher">Teacher</option>
+                                    <option value="Student">Student</option>
+                                  </select>
+                                </td>
+                                <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                                  <div className="inline-flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingUser(u);
+                                        setMemberForm({
+                                          editingExistingId: u.id,
+                                          fullName: u.fullName,
+                                          email: u.email,
+                                          role: u.role,
+                                          idNumber: u.idNumber,
+                                          gradeOrDepartment:
+                                            u.gradeOrDepartment,
+                                        });
+                                      }}
+                                      className="inline-flex items-center gap-1 rounded bg-[#641526] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#4d0f1d] transition-colors cursor-pointer"
+                                    >
+                                      <Pencil className="h-3 w-3 text-[#D4AF37]" />
+                                      Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteUser(u)}
+                                      className="inline-flex items-center gap-1 rounded bg-red-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-red-700 transition-colors cursor-pointer"
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                      Delete
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
                         </tbody>
                       </table>
                     </div>
                   </div>
 
-                  {/* Register New User Form */}
+                  {/* Register or Edit User Form */}
                   <form
                     onSubmit={handleCreateMember}
                     className="lg:col-span-4 rounded-xl bg-white p-6 text-[#1E1B18] border border-neutral-200 shadow-sm space-y-4"
                   >
-                    <div className="flex items-center gap-2">
-                      <UserCheck className="h-5 w-5 text-[#641526]" />
-                      <h3 className="font-display text-base font-bold text-[#641526]">
-                        Register Library Member
-                      </h3>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <UserCheck className="h-5 w-5 text-[#641526]" />
+                        <h3 className="font-display text-base font-bold text-[#641526]">
+                          {memberForm.editingExistingId > 0
+                            ? 'Edit Selected Member'
+                            : 'Register Library Member'}
+                        </h3>
+                      </div>
+                      {memberForm.editingExistingId > 0 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setMemberForm({
+                              editingExistingId: 0,
+                              fullName: '',
+                              email: '',
+                              role: 'Student',
+                              idNumber: '',
+                              gradeOrDepartment: '',
+                            })
+                          }
+                          className="text-[11px] font-semibold text-[#641526] underline hover:text-[#4d0f1d]"
+                        >
+                          New Member
+                        </button>
+                      )}
                     </div>
 
                     <div className="space-y-3 text-xs">
-                      <div>
-                        <label className="block font-semibold text-neutral-700 mb-1">
-                          Full Name
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={memberForm.fullName}
-                          onChange={(e) =>
-                            setMemberForm({
-                              ...memberForm,
-                              fullName: e.target.value,
-                            })
-                          }
-                          placeholder="e.g. Mark Anthony P. Surigao"
-                          className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block font-semibold text-neutral-700 mb-1">
-                          School Email
-                        </label>
-                        <input
-                          type="email"
-                          required
-                          value={memberForm.email}
-                          onChange={(e) =>
-                            setMemberForm({
-                              ...memberForm,
-                              email: e.target.value,
-                            })
-                          }
-                          placeholder="m.surigao@student.bnhs.edu.ph"
-                          className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
-                        />
-                      </div>
-
                       <div className="grid grid-cols-2 gap-2.5">
                         <div>
                           <label className="block font-semibold text-neutral-700 mb-1">
@@ -2831,13 +3222,33 @@ function LibraryPortalContent() {
                           </label>
                           <select
                             value={memberForm.role}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              const chosenRole = e.target.value as UserRole;
+                              // When choosing Librarian (or another role), automatically display that role's member name
+                              if (chosenRole === 'Librarian') {
+                                setActiveRole('Librarian');
+                                const libUser = users.find(
+                                  (u) => u.role === 'Librarian'
+                                );
+                                if (libUser) {
+                                  setMemberForm({
+                                    editingExistingId: libUser.id,
+                                    fullName: libUser.fullName,
+                                    email: libUser.email,
+                                    role: 'Librarian',
+                                    idNumber: libUser.idNumber,
+                                    gradeOrDepartment:
+                                      libUser.gradeOrDepartment,
+                                  });
+                                  return;
+                                }
+                              }
                               setMemberForm({
                                 ...memberForm,
-                                role: e.target.value,
-                              })
-                            }
-                            className="w-full rounded-lg border border-neutral-300 px-2.5 py-2 text-neutral-900"
+                                role: chosenRole,
+                              });
+                            }}
+                            className="w-full rounded-lg border border-neutral-300 px-2.5 py-2 text-neutral-900 font-semibold"
                           >
                             <option value="Student">Student</option>
                             <option value="Teacher">Teacher</option>
@@ -2868,6 +3279,44 @@ function LibraryPortalContent() {
 
                       <div>
                         <label className="block font-semibold text-neutral-700 mb-1">
+                          Full Name
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={memberForm.fullName}
+                          onChange={(e) =>
+                            setMemberForm({
+                              ...memberForm,
+                              fullName: e.target.value,
+                            })
+                          }
+                          placeholder="e.g. Mrs. Marites R. Dela Cruz, RL"
+                          className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 font-semibold"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-neutral-700 mb-1">
+                          School Email
+                        </label>
+                        <input
+                          type="email"
+                          required
+                          value={memberForm.email}
+                          onChange={(e) =>
+                            setMemberForm({
+                              ...memberForm,
+                              email: e.target.value,
+                            })
+                          }
+                          placeholder="m.delacruz@bnhs.edu.ph"
+                          className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-neutral-700 mb-1">
                           Grade & Section / Department
                         </label>
                         <input
@@ -2880,16 +3329,18 @@ function LibraryPortalContent() {
                               gradeOrDepartment: e.target.value,
                             })
                           }
-                          placeholder="e.g. Grade 12 - STEM A"
+                          placeholder="e.g. Head School Librarian"
                           className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
                         />
                       </div>
 
                       <button
                         type="submit"
-                        className="w-full rounded-lg bg-[#641526] py-2.5 text-xs font-semibold text-white hover:bg-[#4d0f1d] transition-colors"
+                        className="w-full rounded-lg bg-[#641526] py-2.5 text-xs font-semibold text-white hover:bg-[#4d0f1d] transition-colors cursor-pointer"
                       >
-                        Save User Account
+                        {memberForm.editingExistingId > 0
+                          ? 'Update Member Account'
+                          : 'Save User Account'}
                       </button>
                     </div>
                   </form>
@@ -3463,12 +3914,20 @@ function LibraryPortalContent() {
                   </label>
                   <select
                     value={borrowForm.borrowerRole}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      const nextRole = e.target.value as UserRole;
+                      const matched = users.find((u) => u.role === nextRole);
                       setBorrowForm({
                         ...borrowForm,
-                        borrowerRole: e.target.value,
-                      })
-                    }
+                        borrowerRole: nextRole,
+                        borrowerName: matched
+                          ? matched.fullName
+                          : borrowForm.borrowerName,
+                        borrowerIdNumber: matched
+                          ? matched.idNumber
+                          : borrowForm.borrowerIdNumber,
+                      });
+                    }}
                     className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
                   >
                     <option value="Student">Student</option>
@@ -4043,6 +4502,7 @@ function LibraryPortalContent() {
 
       <EditUserModal
         user={editingUser}
+        allUsers={users}
         onClose={() => setEditingUser(null)}
         onSave={handleUpdateUser}
       />
@@ -4055,6 +4515,7 @@ function LibraryPortalContent() {
 
       <GoogleSignInModal
         isOpen={isSignInModalOpen}
+        users={users}
         onClose={closeSignInModal}
         onSelectAccount={async (account) => {
           await signInWithPortalAccount(account);

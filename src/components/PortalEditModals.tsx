@@ -811,12 +811,14 @@ export const EditDigitalResourceModal: React.FC<
 
 interface EditUserModalProps {
   user: LibraryUser | null;
+  allUsers?: LibraryUser[];
   onClose: () => void;
   onSave: (userId: number, updated: Partial<LibraryUser>) => Promise<void>;
 }
 
 export const EditUserModal: React.FC<EditUserModalProps> = ({
   user,
+  allUsers = [],
   onClose,
   onSave,
 }) => {
@@ -833,23 +835,58 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
   useEffect(() => {
     if (user) {
       setForm({
-        fullName: user.fullName,
-        email: user.email,
-        role: user.role,
-        idNumber: user.idNumber,
-        gradeOrDepartment: user.gradeOrDepartment,
+        fullName: user.fullName || '',
+        email: user.email || '',
+        role: user.role || 'Student',
+        idNumber: user.idNumber || '',
+        gradeOrDepartment: user.gradeOrDepartment || '',
         status: user.status || 'Active',
       });
     }
-  }, [user]);
+  }, [user?.id]);
 
   if (!user) return null;
 
+  const handleRoleChangeInModal = (nextRole: LibraryUser['role']) => {
+    const matchedRoleUser =
+      allUsers.find((u) => u.role === nextRole && u.id !== user.id) ||
+      allUsers.find((u) => u.role === nextRole) ||
+      INITIAL_USERS.find((u) => u.role === nextRole);
+
+    if (nextRole === 'Librarian' && matchedRoleUser) {
+      setForm((prev) => ({
+        ...prev,
+        role: nextRole,
+        fullName:
+          prev.fullName.trim() && prev.fullName !== user.fullName
+            ? prev.fullName
+            : matchedRoleUser.fullName,
+        gradeOrDepartment:
+          prev.gradeOrDepartment.startsWith('Grade') || !prev.gradeOrDepartment
+            ? matchedRoleUser.gradeOrDepartment || 'Head School Librarian'
+            : prev.gradeOrDepartment,
+      }));
+      return;
+    }
+
+    setForm((prev) => ({
+      ...prev,
+      role: nextRole,
+    }));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!form.fullName.trim()) return;
     setSaving(true);
     try {
-      await onSave(user.id, form);
+      await onSave(user.id, {
+        ...form,
+        fullName: form.fullName.trim(),
+        email: form.email.trim(),
+        idNumber: form.idNumber.trim(),
+        gradeOrDepartment: form.gradeOrDepartment.trim(),
+      });
       onClose();
     } finally {
       setSaving(false);
@@ -864,6 +901,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             Edit Library Member Account
           </h3>
           <button
+            type="button"
             onClick={onClose}
             className="rounded-lg p-1 text-white/70 hover:text-white"
           >
@@ -879,9 +917,11 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             <input
               type="text"
               required
+              autoFocus
               value={form.fullName}
               onChange={(e) => setForm({ ...form, fullName: e.target.value })}
-              className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
+              placeholder="Enter full name..."
+              className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 font-semibold focus:border-[#641526] focus:outline-none"
             />
           </div>
           <div>
@@ -893,7 +933,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
               required
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
-              className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
+              className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 focus:border-[#641526] focus:outline-none"
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -904,12 +944,11 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
               <select
                 value={form.role}
                 onChange={(e) =>
-                  setForm({
-                    ...form,
-                    role: e.target.value as LibraryUser['role'],
-                  })
+                  handleRoleChangeInModal(
+                    e.target.value as LibraryUser['role']
+                  )
                 }
-                className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
+                className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 font-semibold focus:border-[#641526] focus:outline-none"
               >
                 <option value="Administrator">Administrator</option>
                 <option value="Librarian">Librarian</option>
@@ -926,7 +965,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                 required
                 value={form.idNumber}
                 onChange={(e) => setForm({ ...form, idNumber: e.target.value })}
-                className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-neutral-900"
+                className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-neutral-900 focus:border-[#641526] focus:outline-none"
               />
             </div>
           </div>
@@ -941,7 +980,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
               onChange={(e) =>
                 setForm({ ...form, gradeOrDepartment: e.target.value })
               }
-              className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
+              className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 focus:border-[#641526] focus:outline-none"
             />
           </div>
 
@@ -1108,6 +1147,7 @@ export const EditCategoryModal: React.FC<EditCategoryModalProps> = ({
 
 interface GoogleSignInModalProps {
   isOpen: boolean;
+  users?: LibraryUser[];
   onClose: () => void;
   onSelectAccount: (account: {
     fullName: string;
@@ -1120,9 +1160,11 @@ interface GoogleSignInModalProps {
 
 export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
   isOpen,
+  users = [],
   onClose,
   onSelectAccount,
 }) => {
+  const activeUsersList = users.length > 0 ? users : INITIAL_USERS;
   const [fullName, setFullName] = useState('Bless T. Tajale');
   const [email, setEmail] = useState('blesstajale@gmail.com');
   const [role, setRole] = useState<UserRole>('Administrator');
@@ -1133,6 +1175,19 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
   const [submitting, setSubmitting] = useState(false);
 
   if (!isOpen) return null;
+
+  const handleRoleSelectChange = (selectedRole: UserRole) => {
+    setRole(selectedRole);
+    const matchingUser =
+      activeUsersList.find((u) => u.role === selectedRole) ||
+      INITIAL_USERS.find((u) => u.role === selectedRole);
+    if (matchingUser) {
+      setFullName(matchingUser.fullName);
+      setEmail(matchingUser.email);
+      setIdNumber(matchingUser.idNumber);
+      setGradeOrDepartment(matchingUser.gradeOrDepartment);
+    }
+  };
 
   const handleCustomSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1180,9 +1235,9 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
               Quick Sign-In with Google / BNHS Account:
             </div>
             <div className="space-y-2">
-              {INITIAL_USERS.slice(0, 4).map((acct) => (
+              {activeUsersList.slice(0, 5).map((acct) => (
                 <button
-                  key={acct.uid}
+                  key={`${acct.id}-${acct.uid}`}
                   type="button"
                   onClick={() =>
                     onSelectAccount({
@@ -1257,7 +1312,9 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
                 </label>
                 <select
                   value={role}
-                  onChange={(e) => setRole(e.target.value as UserRole)}
+                  onChange={(e) =>
+                    handleRoleSelectChange(e.target.value as UserRole)
+                  }
                   className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 text-neutral-900"
                 >
                   <option value="Administrator">Administrator</option>
