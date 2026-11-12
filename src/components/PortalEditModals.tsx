@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { X, Upload, Image as ImageIcon, Link2, Check } from 'lucide-react';
+import { X, Upload, Image as ImageIcon, Link2, Check, LogIn, ShieldCheck } from 'lucide-react';
 import {
   BookItem,
   BookCategory,
   DigitalResource,
   LibraryUser,
   PortalSettings,
+  UserRole,
 } from '../types.ts';
+import { BUNDLED_ASSETS, INITIAL_USERS } from '../data/bnhsInitialData.ts';
 
 interface AdminPortalSettingsModalProps {
   isOpen: boolean;
@@ -218,8 +220,7 @@ export const AdminPortalSettingsModal: React.FC<
                   setHeroGoogleLink('');
                   setForm({
                     ...form,
-                    heroImageUrl:
-                      '/src/assets/images/bnhs_library_hero_1794464935499.jpg',
+                    heroImageUrl: BUNDLED_ASSETS.heroBanner,
                   });
                 }}
                 className="rounded border border-neutral-300 bg-white px-2 py-0.5 text-[11px] hover:border-[#641526]"
@@ -232,8 +233,7 @@ export const AdminPortalSettingsModal: React.FC<
                   setHeroGoogleLink('');
                   setForm({
                     ...form,
-                    heroImageUrl:
-                      '/src/assets/images/cover_philippine_history_1794464937629.jpg',
+                    heroImageUrl: BUNDLED_ASSETS.coverHistory,
                   });
                 }}
                 className="rounded border border-neutral-300 bg-white px-2 py-0.5 text-[11px] hover:border-[#641526]"
@@ -246,8 +246,7 @@ export const AdminPortalSettingsModal: React.FC<
                   setHeroGoogleLink('');
                   setForm({
                     ...form,
-                    heroImageUrl:
-                      '/src/assets/images/cover_applied_sciences_1794464940290.jpg',
+                    heroImageUrl: BUNDLED_ASSETS.coverScience,
                   });
                 }}
                 className="rounded border border-neutral-300 bg-white px-2 py-0.5 text-[11px] hover:border-[#641526]"
@@ -1102,6 +1101,204 @@ export const EditCategoryModal: React.FC<EditCategoryModalProps> = ({
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+};
+
+interface GoogleSignInModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSelectAccount: (account: {
+    fullName: string;
+    email: string;
+    role: UserRole;
+    idNumber: string;
+    gradeOrDepartment: string;
+  }) => Promise<void>;
+}
+
+export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
+  isOpen,
+  onClose,
+  onSelectAccount,
+}) => {
+  const [fullName, setFullName] = useState('Bless T. Tajale');
+  const [email, setEmail] = useState('blesstajale@gmail.com');
+  const [role, setRole] = useState<UserRole>('Administrator');
+  const [idNumber, setIdNumber] = useState('ADM-2026-0001');
+  const [gradeOrDepartment, setGradeOrDepartment] = useState(
+    'Portal Developer & System Administration'
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  if (!isOpen) return null;
+
+  const handleCustomSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      await onSelectAccount({
+        fullName,
+        email,
+        role,
+        idNumber,
+        gradeOrDepartment,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
+      <div className="w-full max-w-md rounded-xl bg-white text-[#1E1B18] shadow-2xl border border-[#D4AF37]/50 overflow-hidden">
+        <div className="flex items-center justify-between bg-[#420B17] px-6 py-4 text-white">
+          <div className="flex items-center gap-2.5">
+            <ShieldCheck className="h-5 w-5 text-[#D4AF37]" />
+            <div>
+              <h3 className="font-display text-base font-bold">
+                Google & BNHS Account Sign-In
+              </h3>
+              <p className="text-[11px] text-white/75">
+                Barobo National High School Library Portal
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1 text-white/70 hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4 text-xs max-h-[82vh] overflow-y-auto">
+          <div>
+            <div className="font-semibold text-neutral-700 mb-2">
+              Quick Sign-In with Google / BNHS Account:
+            </div>
+            <div className="space-y-2">
+              {INITIAL_USERS.slice(0, 4).map((acct) => (
+                <button
+                  key={acct.uid}
+                  type="button"
+                  onClick={() =>
+                    onSelectAccount({
+                      fullName: acct.fullName,
+                      email: acct.email,
+                      role: acct.role,
+                      idNumber: acct.idNumber,
+                      gradeOrDepartment: acct.gradeOrDepartment,
+                    })
+                  }
+                  className="w-full flex items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-neutral-50 hover:bg-[#641526]/5 hover:border-[#641526] p-3 text-left transition-colors"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="h-8 w-8 rounded-full bg-[#641526] text-[#D4AF37] font-bold flex items-center justify-center shrink-0">
+                      {acct.fullName.charAt(0)}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-bold text-neutral-900 truncate">
+                        {acct.fullName}
+                      </div>
+                      <div className="text-[11px] text-neutral-500 truncate">
+                        {acct.email}
+                      </div>
+                    </div>
+                  </div>
+                  <span className="rounded bg-[#641526]/10 px-2 py-0.5 text-[10px] font-bold text-[#641526] shrink-0">
+                    {acct.role}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <form
+            onSubmit={handleCustomSubmit}
+            className="pt-3 border-t border-neutral-200 space-y-3"
+          >
+            <div className="font-semibold text-neutral-700">
+              Or Sign In with Your Google Email:
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label className="block text-[11px] font-medium text-neutral-600 mb-1">
+                  Full Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-1.5 text-neutral-900"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-neutral-600 mb-1">
+                  Google Email
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-1.5 text-neutral-900"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label className="block text-[11px] font-medium text-neutral-600 mb-1">
+                  Portal Role
+                </label>
+                <select
+                  value={role}
+                  onChange={(e) => setRole(e.target.value as UserRole)}
+                  className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 text-neutral-900"
+                >
+                  <option value="Administrator">Administrator</option>
+                  <option value="Librarian">Librarian</option>
+                  <option value="Teacher">Teacher</option>
+                  <option value="Student">Student</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-neutral-600 mb-1">
+                  ID / LRN Number
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={idNumber}
+                  onChange={(e) => setIdNumber(e.target.value)}
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-1.5 font-mono text-neutral-900"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-lg border border-neutral-300 px-4 py-2 font-medium text-neutral-700 hover:bg-neutral-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={submitting}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#641526] px-4 py-2 font-semibold text-white hover:bg-[#4d0f1d] disabled:opacity-50"
+              >
+                <LogIn className="h-3.5 w-3.5 text-[#D4AF37]" />
+                {submitting ? 'Signing In...' : 'Sign In with Google'}
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
   );

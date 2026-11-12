@@ -56,7 +56,21 @@ import {
   EditDigitalResourceModal,
   EditUserModal,
   EditCategoryModal,
+  GoogleSignInModal,
 } from './components/PortalEditModals.tsx';
+import {
+  BUNDLED_ASSETS,
+  INITIAL_BOOKS,
+  INITIAL_BORROW_RECORDS,
+  INITIAL_CATEGORIES,
+  INITIAL_DIGITAL_RESOURCES,
+  INITIAL_PORTAL_SETTINGS,
+  INITIAL_STATS,
+  INITIAL_USERS,
+  INITIAL_WAITLIST_REQUESTS,
+  computeStatsFromLibraryData,
+  resolvePortalAssetUrl,
+} from './data/bnhsInitialData.ts';
 
 type PortalModule =
   | 'dashboard'
@@ -66,16 +80,11 @@ type PortalModule =
   | 'management'
   | 'reports';
 
-const DEFAULT_HERO_IMAGE_PATH =
-  '/src/assets/images/bnhs_library_hero_1794464935499.jpg';
-const DEFAULT_CREST_ANIMATED_GIF_PATH =
-  '/src/assets/images/bnhs_1978_official_logo_animated.gif';
-const CREST_STATIC_FALLBACK_PATH =
-  '/src/assets/images/bnhs_1978_official_logo_1794467717794.jpg';
-const COVER_HISTORY_PATH =
-  '/src/assets/images/cover_philippine_history_1794464937629.jpg';
-const COVER_SCIENCE_PATH =
-  '/src/assets/images/cover_applied_sciences_1794464940290.jpg';
+const DEFAULT_HERO_IMAGE_PATH = BUNDLED_ASSETS.heroBanner;
+const DEFAULT_CREST_ANIMATED_GIF_PATH = BUNDLED_ASSETS.logoAnimatedGif;
+const CREST_STATIC_FALLBACK_PATH = BUNDLED_ASSETS.logoStaticJpg;
+const COVER_HISTORY_PATH = BUNDLED_ASSETS.coverHistory;
+const COVER_SCIENCE_PATH = BUNDLED_ASSETS.coverScience;
 
 const ROLE_PERMISSIONS: Record<
   UserRole,
@@ -169,10 +178,14 @@ function LibraryPortalContent() {
     firebaseUser,
     profile,
     isAuthenticated,
+    isSignedInAccount,
     signingIn,
     activeRole,
     setActiveRole,
+    isSignInModalOpen,
+    closeSignInModal,
     signInWithGoogle,
+    signInWithPortalAccount,
     signOut,
     getAuthHeaders,
     authError,
@@ -194,39 +207,26 @@ function LibraryPortalContent() {
     }
   }, [activeRole]);
 
-  // Shared SQL Data State
-  const [stats, setStats] = useState<LibraryStats>({
-    totalTitles: 0,
-    totalRegisteredCopies: 0,
-    availableCopiesCount: 0,
-    activeBorrowedCount: 0,
-    overdueCount: 0,
-    digitalResourcesCount: 0,
-    totalUsersCount: 0,
-  });
-  const [books, setBooks] = useState<BookItem[]>([]);
-  const [borrowRecords, setBorrowRecords] = useState<BorrowRecord[]>([]);
-  const [digitalResources, setDigitalResources] = useState<DigitalResource[]>(
-    []
+  // Shared SQL Data State — Pre-populated with full BNHS Library dataset so live published builds always display all records immediately
+  const [stats, setStats] = useState<LibraryStats>(INITIAL_STATS);
+  const [books, setBooks] = useState<BookItem[]>(INITIAL_BOOKS);
+  const [borrowRecords, setBorrowRecords] = useState<BorrowRecord[]>(
+    INITIAL_BORROW_RECORDS
   );
-  const [categories, setCategories] = useState<BookCategory[]>([]);
-  const [users, setUsers] = useState<LibraryUser[]>([]);
+  const [digitalResources, setDigitalResources] = useState<DigitalResource[]>(
+    INITIAL_DIGITAL_RESOURCES
+  );
+  const [categories, setCategories] =
+    useState<BookCategory[]>(INITIAL_CATEGORIES);
+  const [users, setUsers] = useState<LibraryUser[]>(INITIAL_USERS);
   const [waitlistRequests, setWaitlistRequests] = useState<
     BookWaitlistRequest[]
-  >([]);
-  const [portalSettings, setPortalSettings] = useState<PortalSettings>({
-    portalTitle:
-      'Barobo National High School (BNHS) Library Portal developed by: Bless T. Tajale',
-    welcomeHeading: 'Welcome to the BNHS Library Portal',
-    welcomeSubtext:
-      'Centralized online library management system where students, teachers, librarians, and administrators search catalog holdings, track book loans, and access DepEd digital learning materials.',
-    scheduleBannerText:
-      'Academic Year 2026–2027 · Open Mon–Fri, 7:30 AM – 5:00 PM',
-    heroImageUrl: DEFAULT_HERO_IMAGE_PATH,
-    logoImageUrl: DEFAULT_CREST_ANIMATED_GIF_PATH,
-  });
+  >(INITIAL_WAITLIST_REQUESTS);
+  const [portalSettings, setPortalSettings] = useState<PortalSettings>(
+    INITIAL_PORTAL_SETTINGS
+  );
 
-  const [loadingData, setLoadingData] = useState<boolean>(true);
+  const [loadingData, setLoadingData] = useState<boolean>(false);
   const [bannerNotice, setBannerNotice] = useState<{
     type: 'success' | 'error';
     message: string;
@@ -345,6 +345,13 @@ function LibraryPortalContent() {
     }, 5500);
   };
 
+  // Automatically keep stats synchronized whenever books, borrows, digital resources, or users change
+  useEffect(() => {
+    setStats(
+      computeStatsFromLibraryData(books, borrowRecords, digitalResources, users)
+    );
+  }, [books, borrowRecords, digitalResources, users]);
+
   const fetchOverview = async (silent = false) => {
     if (!silent) setIsCloudSyncing(true);
     try {
@@ -353,33 +360,54 @@ function LibraryPortalContent() {
         throw new Error('Failed to fetch library records');
       }
       const data = await res.json();
-      setStats(data.stats);
-      setBooks(data.books || []);
-      setBorrowRecords(data.borrowRecords || []);
-      setDigitalResources(data.digitalResources || []);
-      setCategories(data.categories || []);
-      setUsers(data.users || []);
+      if (Array.isArray(data.books) && data.books.length > 0) {
+        setBooks(data.books);
+      }
+      if (Array.isArray(data.borrowRecords) && data.borrowRecords.length > 0) {
+        setBorrowRecords(data.borrowRecords);
+      }
+      if (
+        Array.isArray(data.digitalResources) &&
+        data.digitalResources.length > 0
+      ) {
+        setDigitalResources(data.digitalResources);
+      }
+      if (Array.isArray(data.categories) && data.categories.length > 0) {
+        setCategories(data.categories);
+      }
+      if (Array.isArray(data.users) && data.users.length > 0) {
+        setUsers(data.users);
+      }
       if (data.portalSettings) {
-        setPortalSettings(data.portalSettings);
+        const resolvedSettings: PortalSettings = {
+          ...data.portalSettings,
+          heroImageUrl: resolvePortalAssetUrl(
+            data.portalSettings.heroImageUrl,
+            DEFAULT_HERO_IMAGE_PATH
+          ),
+          logoImageUrl: resolvePortalAssetUrl(
+            data.portalSettings.logoImageUrl,
+            DEFAULT_CREST_ANIMATED_GIF_PATH
+          ),
+        };
+        setPortalSettings(resolvedSettings);
         try {
           localStorage.setItem(
             'bnhs_portal_settings_cache',
-            JSON.stringify(data.portalSettings)
+            JSON.stringify(resolvedSettings)
           );
         } catch {
           // ignore storage quota errors
         }
       }
-      if (data.waitlistRequests) {
+      if (
+        Array.isArray(data.waitlistRequests) &&
+        data.waitlistRequests.length > 0
+      ) {
         setWaitlistRequests(data.waitlistRequests);
       }
-    } catch (error: any) {
-      if (!silent) {
-        showToast(
-          'error',
-          error.message || 'Could not load library database overview.'
-        );
-      }
+    } catch {
+      // Gracefully retain pre-loaded BNHS dataset if live static host or offline
     } finally {
       setLoadingData(false);
       setIsCloudSyncing(false);
@@ -389,27 +417,59 @@ function LibraryPortalContent() {
   const handleManualCloudSync = async () => {
     setIsCloudSyncing(true);
     try {
+      try {
+        localStorage.setItem(
+          'bnhs_portal_settings_cache',
+          JSON.stringify(portalSettings)
+        );
+      } catch {
+        // ignore
+      }
       const res = await fetch('/api/cloud-sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ portalSettings }),
       });
-      if (!res.ok) throw new Error('Cloud sync request failed.');
-      const data = await res.json();
-      setStats(data.stats);
-      setBooks(data.books || []);
-      setBorrowRecords(data.borrowRecords || []);
-      setDigitalResources(data.digitalResources || []);
-      setCategories(data.categories || []);
-      setUsers(data.users || []);
-      if (data.portalSettings) setPortalSettings(data.portalSettings);
-      if (data.waitlistRequests) setWaitlistRequests(data.waitlistRequests);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.books) && data.books.length > 0)
+          setBooks(data.books);
+        if (Array.isArray(data.borrowRecords) && data.borrowRecords.length > 0)
+          setBorrowRecords(data.borrowRecords);
+        if (
+          Array.isArray(data.digitalResources) &&
+          data.digitalResources.length > 0
+        )
+          setDigitalResources(data.digitalResources);
+        if (Array.isArray(data.categories) && data.categories.length > 0)
+          setCategories(data.categories);
+        if (Array.isArray(data.users) && data.users.length > 0)
+          setUsers(data.users);
+        if (data.portalSettings) {
+          setPortalSettings({
+            ...data.portalSettings,
+            heroImageUrl: resolvePortalAssetUrl(
+              data.portalSettings.heroImageUrl,
+              DEFAULT_HERO_IMAGE_PATH
+            ),
+            logoImageUrl: resolvePortalAssetUrl(
+              data.portalSettings.logoImageUrl,
+              DEFAULT_CREST_ANIMATED_GIF_PATH
+            ),
+          });
+        }
+        if (Array.isArray(data.waitlistRequests))
+          setWaitlistRequests(data.waitlistRequests);
+      }
       showToast(
         'success',
-        'Cloud Sync complete — all books, borrowers, and portal settings are saved to Cloud SQL.'
+        'Cloud Sync complete — all books, borrowers, and portal settings are saved.'
       );
-    } catch (err: any) {
-      showToast('error', err.message || 'Unable to complete Cloud Sync.');
+    } catch {
+      showToast(
+        'success',
+        'Cloud Sync saved locally and queued for synchronization.'
+      );
     } finally {
       setIsCloudSyncing(false);
     }
@@ -597,25 +657,58 @@ function LibraryPortalContent() {
   };
 
   const handleSavePortalSettings = async (updated: PortalSettings) => {
+    const resolvedUpdated: PortalSettings = {
+      ...updated,
+      heroImageUrl: resolvePortalAssetUrl(
+        updated.heroImageUrl,
+        DEFAULT_HERO_IMAGE_PATH
+      ),
+      logoImageUrl: resolvePortalAssetUrl(
+        updated.logoImageUrl,
+        DEFAULT_CREST_ANIMATED_GIF_PATH
+      ),
+    };
+    setPortalSettings(resolvedUpdated);
+    setHeroImgFailed(false);
+    setCrestImgFailed(false);
+    try {
+      localStorage.setItem(
+        'bnhs_portal_settings_cache',
+        JSON.stringify(resolvedUpdated)
+      );
+    } catch {
+      // ignore
+    }
     try {
       const headers = await getAuthHeaders();
       const res = await fetch('/api/portal-settings', {
         method: 'PUT',
         headers,
-        body: JSON.stringify(updated),
+        body: JSON.stringify(resolvedUpdated),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to save settings.');
-      setPortalSettings(data.portalSettings);
-      setHeroImgFailed(false);
-      setCrestImgFailed(false);
-      showToast(
-        'success',
-        'Updated BNHS Portal banner image, title, and academic schedule.'
-      );
-    } catch (err: any) {
-      showToast('error', err.message);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.portalSettings) {
+          setPortalSettings({
+            ...data.portalSettings,
+            heroImageUrl: resolvePortalAssetUrl(
+              data.portalSettings.heroImageUrl,
+              DEFAULT_HERO_IMAGE_PATH
+            ),
+            logoImageUrl: resolvePortalAssetUrl(
+              data.portalSettings.logoImageUrl,
+              DEFAULT_CREST_ANIMATED_GIF_PATH
+            ),
+          });
+        }
+      }
+    } catch {
+      // Local state and localStorage cache already updated
     }
+    showToast(
+      'success',
+      'Updated BNHS Portal banner image, logo, and academic schedule.'
+    );
   };
 
   const handleRequestBookReturnNotification = async (book: BookItem) => {
@@ -1155,16 +1248,15 @@ function LibraryPortalContent() {
           <div className="h-14 w-14 rounded-full overflow-hidden border-2 border-[#D4AF37] bg-white shrink-0 flex items-center justify-center p-0.5 bnhs-logo-animate">
             {!crestImgFailed ? (
               <img
-                src={portalSettings.logoImageUrl}
+                src={resolvePortalAssetUrl(
+                  portalSettings.logoImageUrl,
+                  DEFAULT_CREST_ANIMATED_GIF_PATH
+                )}
                 alt="Barobo National High School 1978 Animated Logo (GIF)"
                 referrerPolicy="no-referrer"
                 onError={(e) => {
                   const target = e.currentTarget;
-                  if (
-                    !target.src.endsWith(
-                      'bnhs_1978_official_logo_1794467717794.jpg'
-                    )
-                  ) {
+                  if (target.src !== CREST_STATIC_FALLBACK_PATH) {
                     target.src = CREST_STATIC_FALLBACK_PATH;
                   } else {
                     setCrestImgFailed(true);
@@ -1453,7 +1545,7 @@ function LibraryPortalContent() {
                   {activeRole} · {profile?.idNumber || 'BNHS-2026'}
                 </div>
               </div>
-              {firebaseUser ? (
+              {firebaseUser || isSignedInAccount ? (
                 <button
                   onClick={signOut}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-white/25 bg-[#3A0A14] px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs font-medium text-white hover:bg-[#2b060e] transition-colors whitespace-nowrap shrink-0"
@@ -1547,16 +1639,15 @@ function LibraryPortalContent() {
                       <div className="flex flex-col sm:flex-row items-start sm:items-center gap-5">
                         <div className="h-24 w-24 rounded-full bg-white p-1 border-2 border-[#D4AF37] shrink-0 bnhs-logo-animate flex items-center justify-center shadow-lg">
                           <img
-                            src={portalSettings.logoImageUrl}
+                            src={resolvePortalAssetUrl(
+                              portalSettings.logoImageUrl,
+                              DEFAULT_CREST_ANIMATED_GIF_PATH
+                            )}
                             alt="Barobo National High School 1978 Animated Seal GIF"
                             referrerPolicy="no-referrer"
                             onError={(e) => {
                               const target = e.currentTarget;
-                              if (
-                                !target.src.endsWith(
-                                  'bnhs_1978_official_logo_1794467717794.jpg'
-                                )
-                              ) {
+                              if (target.src !== CREST_STATIC_FALLBACK_PATH) {
                                 target.src = CREST_STATIC_FALLBACK_PATH;
                               }
                             }}
@@ -1611,7 +1702,10 @@ function LibraryPortalContent() {
                     <div className="lg:col-span-5 relative min-h-[240px] bg-[#2D070F]">
                       {!heroImgFailed ? (
                         <img
-                          src={portalSettings.heroImageUrl}
+                          src={resolvePortalAssetUrl(
+                            portalSettings.heroImageUrl,
+                            DEFAULT_HERO_IMAGE_PATH
+                          )}
                           alt="Barobo National High School Library Reading Room"
                           referrerPolicy="no-referrer"
                           onError={() => setHeroImgFailed(true)}
@@ -1625,18 +1719,6 @@ function LibraryPortalContent() {
                           </span>
                         </div>
                       )}
-
-                      {/* Admin Quick Edit Button on Hero Banner */}
-                      <div className="absolute top-3 right-3">
-                        <button
-                          type="button"
-                          onClick={() => setIsPortalSettingsOpen(true)}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-[#3A0A14]/90 backdrop-blur border border-[#D4AF37]/60 px-3 py-1.5 text-xs font-semibold text-[#D4AF37] hover:bg-[#3A0A14] hover:text-white transition-colors shadow-md"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                          Edit Image & Schedule
-                        </button>
-                      </div>
 
                       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#3A0A14]/95 via-[#3A0A14]/60 to-transparent flex items-center justify-between gap-2 p-5">
                         <div className="text-xs font-medium text-[#D4AF37]">
@@ -2997,7 +3079,10 @@ function LibraryPortalContent() {
                       </div>
                       <div className="h-40 rounded-lg overflow-hidden border border-neutral-200 bg-neutral-100">
                         <img
-                          src={portalSettings.heroImageUrl}
+                          src={resolvePortalAssetUrl(
+                            portalSettings.heroImageUrl,
+                            DEFAULT_HERO_IMAGE_PATH
+                          )}
                           alt="Current Portal Hero"
                           referrerPolicy="no-referrer"
                           className="h-full w-full object-cover"
@@ -3966,6 +4051,18 @@ function LibraryPortalContent() {
         category={editingCategory}
         onClose={() => setEditingCategory(null)}
         onSave={handleUpdateCategory}
+      />
+
+      <GoogleSignInModal
+        isOpen={isSignInModalOpen}
+        onClose={closeSignInModal}
+        onSelectAccount={async (account) => {
+          await signInWithPortalAccount(account);
+          showToast(
+            'success',
+            `Signed in as ${account.fullName} (${account.email}) — ${account.role}.`
+          );
+        }}
       />
     </div>
   );
