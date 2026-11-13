@@ -618,7 +618,7 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: '15mb' }));
+  app.use(express.json({ limit: '50mb' }));
 
   // Serve images & animated GIFs from both /src/assets and /assets in all environments (dev + published live)
   app.use('/src/assets', express.static(path.join(__dirname, 'src/assets')));
@@ -677,7 +677,7 @@ async function startServer() {
     });
   });
 
-  // Explicit Cloud Sync endpoint for manual or background auto-sync
+  // Explicit Cloud Sync endpoint for manual or background auto-sync (saves all portal files & resource inputs)
   app.post('/api/cloud-sync', async (req, res) => {
     if (req.body?.portalSettings) {
       fallbackPortalSettings = {
@@ -688,6 +688,31 @@ async function startServer() {
         await upsertPortalSyncStateRecord(
           'portal_settings',
           fallbackPortalSettings
+        );
+      } catch (_err) {
+        // Fallback memory updated
+      }
+    }
+    if (Array.isArray(req.body?.digitalResources)) {
+      const incomingDigital = req.body.digitalResources;
+      if (incomingDigital.length > 0) {
+        fallbackDigitalResources = incomingDigital;
+        try {
+          await upsertPortalSyncStateRecord(
+            'digital_resources_snapshot',
+            incomingDigital
+          );
+        } catch (_err) {
+          // Fallback memory updated
+        }
+      }
+    }
+    if (Array.isArray(req.body?.waitlistRequests)) {
+      fallbackWaitlistRequests = req.body.waitlistRequests;
+      try {
+        await upsertPortalSyncStateRecord(
+          'waitlist_requests',
+          fallbackWaitlistRequests
         );
       } catch (_err) {
         // Fallback memory updated
@@ -872,6 +897,10 @@ async function startServer() {
   app.post('/api/digital-resources', requireAuth, async (req: AuthRequest, res) => {
     try {
       const resource = await createDigitalResourceRecord(req.body);
+      fallbackDigitalResources = [
+        resource,
+        ...fallbackDigitalResources.filter((r) => r.id !== resource.id),
+      ];
       res.status(201).json({ resource });
     } catch (_error) {
       const newRes = {
@@ -896,13 +925,21 @@ async function startServer() {
 
   app.put('/api/digital-resources/:id', requireAuth, async (req: AuthRequest, res) => {
     const resourceId = Number(req.params.id);
+    fallbackDigitalResources = fallbackDigitalResources.map((r) =>
+      r.id === resourceId ? { ...r, ...req.body } : r
+    );
     try {
       const resource = await updateDigitalResourceRecord(resourceId, req.body);
-      res.json({ resource });
+      if (resource) {
+        fallbackDigitalResources = fallbackDigitalResources.map((r) =>
+          r.id === resourceId ? { ...r, ...resource } : r
+        );
+      }
+      res.json({
+        resource:
+          resource || fallbackDigitalResources.find((r) => r.id === resourceId),
+      });
     } catch (_error) {
-      fallbackDigitalResources = fallbackDigitalResources.map((r) =>
-        r.id === resourceId ? { ...r, ...req.body } : r
-      );
       res.json({
         resource: fallbackDigitalResources.find((r) => r.id === resourceId),
       });
@@ -911,15 +948,15 @@ async function startServer() {
 
   app.delete('/api/digital-resources/:id', requireAuth, async (req: AuthRequest, res) => {
     const resourceId = Number(req.params.id);
+    const deletedLocal = fallbackDigitalResources.find((r) => r.id === resourceId);
+    fallbackDigitalResources = fallbackDigitalResources.filter(
+      (r) => r.id !== resourceId
+    );
     try {
       const deleted = await deleteDigitalResourceRecord(resourceId);
-      res.json({ deleted });
+      res.json({ deleted: deleted || deletedLocal });
     } catch (_error) {
-      const deleted = fallbackDigitalResources.find((r) => r.id === resourceId);
-      fallbackDigitalResources = fallbackDigitalResources.filter(
-        (r) => r.id !== resourceId
-      );
-      res.json({ deleted });
+      res.json({ deleted: deletedLocal });
     }
   });
 

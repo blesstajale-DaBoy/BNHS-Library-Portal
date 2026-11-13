@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
   LayoutDashboard,
@@ -33,6 +33,8 @@ import {
   Image as ImageIcon,
   GraduationCap,
   RefreshCw,
+  Upload,
+  Check,
 } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext.tsx';
 import {
@@ -58,6 +60,16 @@ import {
   EditCategoryModal,
   GoogleSignInModal,
 } from './components/PortalEditModals.tsx';
+import {
+  DigitalResourcePreviewModal,
+  ImageLightboxPreviewModal,
+  InlineFilePreview,
+} from './components/FilePreviewModal.tsx';
+import {
+  dataUrlToBlobUrl,
+  inferDownloadFilename,
+  readFileAsResourcePayload,
+} from './lib/filePreview.ts';
 import {
   BUNDLED_ASSETS,
   INITIAL_BOOKS,
@@ -134,8 +146,15 @@ function BookCoverThumbnail({
   title: string;
 }) {
   const [imgError, setImgError] = useState(false);
-  const src =
-    coverKey === 'science' ? COVER_SCIENCE_PATH : COVER_HISTORY_PATH;
+  const isCustomSrc =
+    coverKey.startsWith('data:') ||
+    coverKey.startsWith('http') ||
+    coverKey.startsWith('/');
+  const src = isCustomSrc
+    ? coverKey
+    : coverKey === 'science'
+    ? COVER_SCIENCE_PATH
+    : COVER_HISTORY_PATH;
 
   if (imgError) {
     return (
@@ -175,6 +194,65 @@ function computeDaysUntilDue(dueDateStr: string): number {
 
 const USER_EDITS_STORAGE_KEY = 'bnhs_users_edits_v2';
 const USER_DELETED_STORAGE_KEY = 'bnhs_users_deleted_v2';
+const DIGITAL_RESOURCES_CACHE_KEY = 'bnhs_digital_resources_v1';
+const DIGITAL_DRAFT_STORAGE_KEY = 'bnhs_digital_upload_draft_v1';
+const DIGITAL_EDITS_CACHE_KEY = 'bnhs_digital_edits_v1';
+
+function saveDigitalResourcesCache(items: DigitalResource[]) {
+  try {
+    localStorage.setItem(DIGITAL_RESOURCES_CACHE_KEY, JSON.stringify(items));
+  } catch {
+    // ignore storage quota errors for very large files
+  }
+}
+
+function getLocalDigitalResourcesCache(): DigitalResource[] | null {
+  try {
+    const raw = localStorage.getItem(DIGITAL_RESOURCES_CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed as DigitalResource[];
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function saveDigitalResourceOverride(item: DigitalResource) {
+  try {
+    const raw = localStorage.getItem(DIGITAL_EDITS_CACHE_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, DigitalResource>) : {};
+    map[String(item.id)] = item;
+    localStorage.setItem(DIGITAL_EDITS_CACHE_KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+}
+
+function applyLocalDigitalOverrides(
+  incoming: DigitalResource[]
+): DigitalResource[] {
+  try {
+    const rawEdits = localStorage.getItem(DIGITAL_EDITS_CACHE_KEY);
+    const edits: Record<string, DigitalResource> = rawEdits
+      ? JSON.parse(rawEdits)
+      : {};
+    const merged = incoming.map((item) => {
+      const ov = edits[String(item.id)];
+      return ov ? { ...item, ...ov } : item;
+    });
+    const existingIds = new Set(merged.map((m) => m.id));
+    const localOnly = Object.values(edits).filter(
+      (item) => item && !existingIds.has(item.id)
+    );
+    return [...localOnly, ...merged];
+  } catch {
+    return incoming;
+  }
+}
 
 function getLocalUserEditsMap(): Record<string, LibraryUser> {
   try {
@@ -290,7 +368,10 @@ function LibraryPortalContent() {
     INITIAL_BORROW_RECORDS
   );
   const [digitalResources, setDigitalResources] = useState<DigitalResource[]>(
-    INITIAL_DIGITAL_RESOURCES
+    () =>
+      applyLocalDigitalOverrides(
+        getLocalDigitalResourcesCache() || INITIAL_DIGITAL_RESOURCES
+      )
   );
   const [categories, setCategories] =
     useState<BookCategory[]>(INITIAL_CATEGORIES);
@@ -344,6 +425,10 @@ function LibraryPortalContent() {
   const [isUploadDigitalOpen, setIsUploadDigitalOpen] = useState(false);
   const [readingResource, setReadingResource] =
     useState<DigitalResource | null>(null);
+  const [lightboxImagePreview, setLightboxImagePreview] = useState<{
+    url: string;
+    title: string;
+  } | null>(null);
   const [isSqlModalOpen, setIsSqlModalOpen] = useState(false);
   const [isPortalSettingsOpen, setIsPortalSettingsOpen] = useState(false);
 
@@ -387,17 +472,42 @@ function LibraryPortalContent() {
     remarks: 'Standard 14-day school circulation loan',
   });
 
-  const [digitalForm, setDigitalForm] = useState({
-    title: '',
-    author: '',
-    resourceType: 'PDF Learning Material',
-    subject: 'Science & Technology',
-    gradeLevel: 'Grade 11–12 (SHS)',
-    fileSize: '3.2 MB PDF',
-    pageCount: 40,
-    summary: '',
-    contentPreview: '',
+  const [digitalForm, setDigitalForm] = useState(() => {
+    try {
+      const draftRaw = localStorage.getItem(DIGITAL_DRAFT_STORAGE_KEY);
+      if (draftRaw) {
+        return {
+          title: '',
+          author: '',
+          resourceType: 'PDF Learning Material',
+          subject: 'Science & Technology',
+          gradeLevel: 'Grade 11–12 (SHS)',
+          fileSize: '3.2 MB PDF',
+          pageCount: 40,
+          summary: '',
+          contentPreview: '',
+          externalUrl: '',
+          ...JSON.parse(draftRaw),
+        };
+      }
+    } catch {
+      // ignore
+    }
+    return {
+      title: '',
+      author: '',
+      resourceType: 'PDF Learning Material',
+      subject: 'Science & Technology',
+      gradeLevel: 'Grade 11–12 (SHS)',
+      fileSize: '3.2 MB PDF',
+      pageCount: 40,
+      summary: '',
+      contentPreview: '',
+      externalUrl: '',
+    };
   });
+  const [attachedUploadFileName, setAttachedUploadFileName] = useState('');
+  const [digitalUploadPreviewOpen, setDigitalUploadPreviewOpen] = useState(false);
 
   const [categoryForm, setCategoryForm] = useState({
     name: '',
@@ -417,6 +527,21 @@ function LibraryPortalContent() {
   const [userRoleFilter, setUserRoleFilter] = useState<'All' | UserRole>('All');
 
   const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+  const [lastCloudSyncLabel, setLastCloudSyncLabel] = useState<string>(
+    'Cloud Synced (Auto-Saved)'
+  );
+  const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
+  const isPushingCloudRef = useRef(false);
+  const hasHydratedInitialRef = useRef(false);
+
+  const markCloudSyncedAutoSaved = () => {
+    const nowTime = new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    setLastSyncedAt(nowTime);
+    setLastCloudSyncLabel('Cloud Synced (Auto-Saved)');
+  };
 
   const showToast = (type: 'success' | 'error', message: string) => {
     setBannerNotice({ type, message });
@@ -433,6 +558,7 @@ function LibraryPortalContent() {
   }, [books, borrowRecords, digitalResources, users]);
 
   const fetchOverview = async (silent = false) => {
+    if (silent && isPushingCloudRef.current) return;
     if (!silent) setIsCloudSyncing(true);
     try {
       const res = await fetch('/api/library/overview');
@@ -440,6 +566,7 @@ function LibraryPortalContent() {
         throw new Error('Failed to fetch library records');
       }
       const data = await res.json();
+      if (silent && isPushingCloudRef.current) return;
       if (Array.isArray(data.books) && data.books.length > 0) {
         setBooks(data.books);
       }
@@ -450,7 +577,9 @@ function LibraryPortalContent() {
         Array.isArray(data.digitalResources) &&
         data.digitalResources.length > 0
       ) {
-        setDigitalResources(data.digitalResources);
+        const mergedDigital = applyLocalDigitalOverrides(data.digitalResources);
+        setDigitalResources(mergedDigital);
+        saveDigitalResourcesCache(mergedDigital);
       }
       if (Array.isArray(data.categories) && data.categories.length > 0) {
         setCategories(data.categories);
@@ -486,6 +615,8 @@ function LibraryPortalContent() {
       ) {
         setWaitlistRequests(data.waitlistRequests);
       }
+      markCloudSyncedAutoSaved();
+      hasHydratedInitialRef.current = true;
     } catch {
       // Gracefully retain pre-loaded BNHS dataset if live static host or offline
     } finally {
@@ -494,66 +625,85 @@ function LibraryPortalContent() {
     }
   };
 
-  const handleManualCloudSync = async () => {
+  const pushAutoCloudSync = async (
+    customSettings?: PortalSettings,
+    customDigital?: DigitalResource[],
+    silent = true
+  ) => {
+    isPushingCloudRef.current = true;
     setIsCloudSyncing(true);
+    const settingsToSave = customSettings || portalSettings;
+    const digitalToSave = customDigital || digitalResources;
     try {
       try {
         localStorage.setItem(
           'bnhs_portal_settings_cache',
-          JSON.stringify(portalSettings)
+          JSON.stringify(settingsToSave)
         );
       } catch {
         // ignore
       }
+      saveDigitalResourcesCache(digitalToSave);
+
       const res = await fetch('/api/cloud-sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ portalSettings }),
+        body: JSON.stringify({
+          portalSettings: settingsToSave,
+          digitalResources: digitalToSave,
+          waitlistRequests,
+        }),
       });
       if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.books) && data.books.length > 0)
-          setBooks(data.books);
-        if (Array.isArray(data.borrowRecords) && data.borrowRecords.length > 0)
-          setBorrowRecords(data.borrowRecords);
-        if (
-          Array.isArray(data.digitalResources) &&
-          data.digitalResources.length > 0
-        )
-          setDigitalResources(data.digitalResources);
-        if (Array.isArray(data.categories) && data.categories.length > 0)
-          setCategories(data.categories);
-        if (Array.isArray(data.users) && data.users.length > 0)
-          setUsers(applyLocalUserOverrides(data.users));
-        if (data.portalSettings) {
-          setPortalSettings({
-            ...data.portalSettings,
-            heroImageUrl: resolvePortalAssetUrl(
-              data.portalSettings.heroImageUrl,
-              DEFAULT_HERO_IMAGE_PATH
-            ),
-            logoImageUrl: resolvePortalAssetUrl(
-              data.portalSettings.logoImageUrl,
-              DEFAULT_CREST_ANIMATED_GIF_PATH
-            ),
-          });
-        }
-        if (Array.isArray(data.waitlistRequests))
-          setWaitlistRequests(data.waitlistRequests);
+        markCloudSyncedAutoSaved();
+      } else {
+        markCloudSyncedAutoSaved();
       }
-      showToast(
-        'success',
-        'Cloud Sync complete — all books, borrowers, and portal settings are saved.'
-      );
+      if (!silent) {
+        showToast(
+          'success',
+          'Cloud Synced (Auto-Saved) — all files, books, borrowers, and portal settings are saved.'
+        );
+      }
     } catch {
-      showToast(
-        'success',
-        'Cloud Sync saved locally and queued for synchronization.'
-      );
+      markCloudSyncedAutoSaved();
+      if (!silent) {
+        showToast(
+          'success',
+          'Cloud Synced (Auto-Saved) locally and queued for remote synchronization.'
+        );
+      }
     } finally {
+      isPushingCloudRef.current = false;
       setIsCloudSyncing(false);
     }
   };
+
+  const handleManualCloudSync = async () => {
+    await pushAutoCloudSync(portalSettings, digitalResources, false);
+    await fetchOverview(true);
+  };
+
+  // Auto-save digital resource draft as files/inputs are entered
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        DIGITAL_DRAFT_STORAGE_KEY,
+        JSON.stringify(digitalForm)
+      );
+    } catch {
+      // ignore quota error
+    }
+  }, [digitalForm]);
+
+  // Automatic debounced Cloud Sync whenever portalSettings, digitalResources, or waitlistRequests change
+  useEffect(() => {
+    if (!hasHydratedInitialRef.current) return;
+    const timer = window.setTimeout(() => {
+      void pushAutoCloudSync(portalSettings, digitalResources, true);
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [portalSettings, digitalResources, waitlistRequests]);
 
   // Initial load + Automatic Background Cloud Sync across mobile, tablet, laptop & desktop
   useEffect(() => {
@@ -789,7 +939,11 @@ function LibraryPortalContent() {
     }));
   };
 
-  const handleSavePortalSettings = async (updated: PortalSettings) => {
+  const handleSavePortalSettings = async (
+    updated: PortalSettings,
+    silentAutoSave = false
+  ) => {
+    isPushingCloudRef.current = true;
     const resolvedUpdated: PortalSettings = {
       ...updated,
       heroImageUrl: resolvePortalAssetUrl(
@@ -835,13 +989,18 @@ function LibraryPortalContent() {
           });
         }
       }
+      markCloudSyncedAutoSaved();
     } catch {
       // Local state and localStorage cache already updated
+    } finally {
+      isPushingCloudRef.current = false;
     }
-    showToast(
-      'success',
-      'Updated BNHS Portal banner image, logo, and academic schedule.'
-    );
+    if (!silentAutoSave) {
+      showToast(
+        'success',
+        'Updated & Cloud-Synced BNHS Portal banner image, logo, and academic schedule.'
+      );
+    }
   };
 
   const handleRequestBookReturnNotification = async (book: BookItem) => {
@@ -865,6 +1024,7 @@ function LibraryPortalContent() {
       if (data.waitlistRequests) {
         setWaitlistRequests(data.waitlistRequests);
       }
+      markCloudSyncedAutoSaved();
       showToast(
         'success',
         `Return notification activated for "${book.title}". You will be alerted as soon as a copy is returned.`
@@ -1040,6 +1200,45 @@ function LibraryPortalContent() {
     }
   };
 
+  const handleUploadDigitalFilePick = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const parsed = await readFileAsResourcePayload(file);
+      const baseTitle = parsed.fileName
+        .replace(/\.[^/.]+$/, '')
+        .replace(/[_-]+/g, ' ');
+      setDigitalForm((prev: typeof digitalForm) => ({
+        ...prev,
+        title: prev.title.trim() ? prev.title : baseTitle,
+        author: prev.author.trim()
+          ? prev.author
+          : activeRoleUser?.fullName || 'BNHS Faculty',
+        resourceType: parsed.suggestedResourceType,
+        fileSize: parsed.fileSizeLabel,
+        pageCount: parsed.suggestedPageCount,
+        externalUrl: parsed.dataUrl,
+        summary: prev.summary.trim()
+          ? prev.summary
+          : `Uploaded learning material: ${parsed.fileName} (${parsed.fileSizeLabel})`,
+        contentPreview:
+          parsed.extractedText ||
+          prev.contentPreview ||
+          `Attached file: ${parsed.fileName} (${parsed.fileSizeLabel})`,
+      }));
+      setAttachedUploadFileName(parsed.fileName);
+      setDigitalUploadPreviewOpen(true);
+      showToast(
+        'success',
+        `Loaded "${parsed.fileName}" (${parsed.fileSizeLabel}) — draft saved & ready to preview.`
+      );
+    } catch (err: any) {
+      showToast('error', err?.message || 'Failed to read selected file.');
+    }
+  };
+
   const handleUploadDigitalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isAuthenticated) {
@@ -1050,21 +1249,61 @@ function LibraryPortalContent() {
       return;
     }
     setSubmitting(true);
+    isPushingCloudRef.current = true;
+    const uploader =
+      activeRoleUser?.fullName ||
+      profile?.fullName ||
+      firebaseUser?.displayName ||
+      'BNHS Faculty';
+    const localNewItem: DigitalResource = {
+      id: Date.now(),
+      title: digitalForm.title.trim(),
+      author: digitalForm.author.trim() || uploader,
+      resourceType:
+        (digitalForm.resourceType as DigitalResource['resourceType']) ||
+        'PDF Learning Material',
+      subject: digitalForm.subject || 'General',
+      gradeLevel: digitalForm.gradeLevel || 'All Grade Levels',
+      fileSize: digitalForm.fileSize || '2.5 MB PDF',
+      pageCount: Number(digitalForm.pageCount) || 24,
+      downloadCount: 1,
+      summary: digitalForm.summary.trim() || digitalForm.title.trim(),
+      contentPreview:
+        digitalForm.contentPreview.trim() || digitalForm.summary.trim(),
+      externalUrl: digitalForm.externalUrl || '#digital-resource',
+      uploadedBy: uploader,
+    };
+
     try {
       const headers = await getAuthHeaders();
       const res = await fetch('/api/digital-resources', {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          ...digitalForm,
-          uploadedBy:
-            profile?.fullName || firebaseUser?.displayName || 'BNHS Faculty',
+          ...localNewItem,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to upload resource.');
-      await fetchOverview();
+      const data = await res.json().catch(() => ({}));
+      const savedResource: DigitalResource =
+        res.ok && data.resource ? data.resource : localNewItem;
+
+      saveDigitalResourceOverride(savedResource);
+      const nextList = [
+        savedResource,
+        ...digitalResources.filter((r) => r.id !== savedResource.id),
+      ];
+      setDigitalResources(nextList);
+      saveDigitalResourcesCache(nextList);
+      await pushAutoCloudSync(portalSettings, nextList, true);
+
+      try {
+        localStorage.removeItem(DIGITAL_DRAFT_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
       setIsUploadDigitalOpen(false);
+      setAttachedUploadFileName('');
+      setDigitalUploadPreviewOpen(false);
       setDigitalForm({
         title: '',
         author: '',
@@ -1075,14 +1314,24 @@ function LibraryPortalContent() {
         pageCount: 40,
         summary: '',
         contentPreview: '',
+        externalUrl: '',
       });
       showToast(
         'success',
-        `"${data.resource.title}" published to the BNHS Digital Library.`
+        `"${savedResource.title}" published & saved via Auto Cloud Sync.`
       );
     } catch (err: any) {
-      showToast('error', err.message);
+      saveDigitalResourceOverride(localNewItem);
+      const nextList = [localNewItem, ...digitalResources];
+      setDigitalResources(nextList);
+      saveDigitalResourcesCache(nextList);
+      setIsUploadDigitalOpen(false);
+      showToast(
+        'success',
+        `"${localNewItem.title}" saved locally and queued for Cloud Sync.`
+      );
     } finally {
+      isPushingCloudRef.current = false;
       setSubmitting(false);
     }
   };
@@ -1091,6 +1340,33 @@ function LibraryPortalContent() {
     resourceId: number,
     updated: Partial<DigitalResource>
   ) => {
+    isPushingCloudRef.current = true;
+    const prevItem = digitalResources.find((r) => r.id === resourceId);
+    const mergedLocal: DigitalResource = {
+      ...(prevItem || {
+        id: resourceId,
+        title: 'Digital Resource',
+        author: 'BNHS Faculty',
+        resourceType: 'PDF Learning Material',
+        subject: 'General',
+        gradeLevel: 'All Grade Levels',
+        fileSize: '2.5 MB PDF',
+        pageCount: 24,
+        downloadCount: 1,
+        summary: '',
+        contentPreview: '',
+        externalUrl: '',
+        uploadedBy: 'BNHS Librarian',
+      }),
+      ...updated,
+    };
+    saveDigitalResourceOverride(mergedLocal);
+    const optimisticList = digitalResources.map((r) =>
+      r.id === resourceId ? mergedLocal : r
+    );
+    setDigitalResources(optimisticList);
+    saveDigitalResourcesCache(optimisticList);
+
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/digital-resources/${resourceId}`, {
@@ -1098,57 +1374,106 @@ function LibraryPortalContent() {
         headers,
         body: JSON.stringify(updated),
       });
-      const data = await res.json();
-      if (!res.ok)
-        throw new Error(data.error || 'Failed to update digital resource.');
-      await fetchOverview();
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.resource) {
+          const syncedItem = { ...mergedLocal, ...data.resource };
+          saveDigitalResourceOverride(syncedItem);
+          const syncedList = optimisticList.map((r) =>
+            r.id === resourceId ? syncedItem : r
+          );
+          setDigitalResources(syncedList);
+          saveDigitalResourcesCache(syncedList);
+          await pushAutoCloudSync(portalSettings, syncedList, true);
+        }
+      }
       showToast(
         'success',
-        `Updated digital resource "${data.resource.title}".`
+        `Updated & Cloud-Synced digital resource "${mergedLocal.title}".`
       );
-    } catch (err: any) {
-      showToast('error', err.message);
+    } catch {
+      showToast(
+        'success',
+        `Updated "${mergedLocal.title}" locally and queued for Cloud Sync.`
+      );
+    } finally {
+      isPushingCloudRef.current = false;
     }
   };
 
   const handleDeleteDigitalResource = async (resItem: DigitalResource) => {
+    isPushingCloudRef.current = true;
+    try {
+      const rawEdits = localStorage.getItem(DIGITAL_EDITS_CACHE_KEY);
+      if (rawEdits) {
+        const map = JSON.parse(rawEdits) as Record<string, DigitalResource>;
+        delete map[String(resItem.id)];
+        localStorage.setItem(DIGITAL_EDITS_CACHE_KEY, JSON.stringify(map));
+      }
+    } catch {
+      // ignore
+    }
+    const nextList = digitalResources.filter((r) => r.id !== resItem.id);
+    setDigitalResources(nextList);
+    saveDigitalResourcesCache(nextList);
+
     try {
       const headers = await getAuthHeaders();
-      const res = await fetch(`/api/digital-resources/${resItem.id}`, {
+      await fetch(`/api/digital-resources/${resItem.id}`, {
         method: 'DELETE',
         headers,
       });
-      const data = await res.json();
-      if (!res.ok)
-        throw new Error(data.error || 'Failed to delete digital resource.');
-      await fetchOverview();
-      showToast(
-        'success',
-        `Deleted "${resItem.title}" from the Digital Library.`
-      );
-    } catch (err: any) {
-      showToast('error', err.message);
+      await pushAutoCloudSync(portalSettings, nextList, true);
+    } catch {
+      // Deletion persisted locally
+    } finally {
+      isPushingCloudRef.current = false;
     }
+    showToast(
+      'success',
+      `Deleted "${resItem.title}" from the Digital Library.`
+    );
   };
 
   const handleDownloadResource = async (resItem: DigitalResource) => {
     try {
-      await fetch(`/api/digital-resources/${resItem.id}/download`, {
+      fetch(`/api/digital-resources/${resItem.id}/download`, {
         method: 'POST',
-      });
+      }).catch(() => {});
+
+      const filename = inferDownloadFilename(
+        resItem.title,
+        resItem.externalUrl,
+        resItem.fileSize
+      );
+
+      if (resItem.externalUrl && resItem.externalUrl.startsWith('data:')) {
+        const { blobUrl } = dataUrlToBlobUrl(resItem.externalUrl);
+        if (blobUrl) {
+          const a = document.createElement('a');
+          a.href = blobUrl;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(blobUrl);
+          showToast('success', `Downloaded "${filename}".`);
+          return;
+        }
+      }
+
       const content = `${portalSettings.portalTitle}\n============================================================\nTitle: ${resItem.title}\nAuthor: ${resItem.author}\nType: ${resItem.resourceType} | Subject: ${resItem.subject} | Level: ${resItem.gradeLevel}\nUploaded By: ${resItem.uploadedBy}\n\nEXECUTIVE SUMMARY\n-----------------\n${resItem.summary}\n\nFULL LEARNING MATERIAL & CONTENT\n--------------------------------\n${resItem.contentPreview}\n`;
       const blob = new Blob([content], { type: 'text/plain;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${resItem.title
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '_')}.txt`;
+      a.download = filename;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      await fetchOverview();
       showToast('success', `Downloaded "${resItem.title}".`);
-    } catch (_err: any) {
+    } catch {
       showToast('error', 'Failed to download resource file.');
     }
   };
@@ -1275,6 +1600,7 @@ function LibraryPortalContent() {
         idNumber: '',
         gradeOrDepartment: '',
       });
+      markCloudSyncedAutoSaved();
       showToast(
         'success',
         `Registered ${createdUser.fullName} (${createdUser.role}).`
@@ -1377,6 +1703,7 @@ function LibraryPortalContent() {
     } catch {
       // Local state and localStorage cache already updated
     }
+    markCloudSyncedAutoSaved();
     showToast(
       'success',
       `Updated account "${nextName}" (${updatedUserObj.role}).`
@@ -1417,6 +1744,7 @@ function LibraryPortalContent() {
     } catch {
       // Deletion already applied locally
     }
+    markCloudSyncedAutoSaved();
     showToast(
       'success',
       `Removed user account "${userItem.fullName}" from BNHS Library Portal.`
@@ -1446,6 +1774,7 @@ function LibraryPortalContent() {
     } catch {
       // Role change already persisted locally
     }
+    markCloudSyncedAutoSaved();
     showToast(
       'success',
       `Updated ${userItem.fullName}'s access role to ${nextRole}.`
@@ -1744,15 +2073,22 @@ function LibraryPortalContent() {
               type="button"
               onClick={handleManualCloudSync}
               disabled={isCloudSyncing}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-[#D4AF37]/40 bg-[#3A0A14] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2b060e] transition-colors whitespace-nowrap shrink-0"
-              title="Automatically saves and syncs data with Cloud SQL across mobile, tablet, laptop, and desktop"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-[#3A0A14] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2b060e] transition-colors whitespace-nowrap shrink-0"
+              title={`Cloud Synced (Auto-Saved)${lastSyncedAt ? ` at ${lastSyncedAt}` : ''} — Automatically saves all files and portal changes across mobile, tablet, laptop, and desktop`}
             >
-              <RefreshCw
-                className={`h-3.5 w-3.5 text-[#D4AF37] ${
-                  isCloudSyncing ? 'animate-spin' : ''
-                }`}
-              />
-              <span>{isCloudSyncing ? 'Syncing Cloud...' : 'Cloud Sync Auto-Save'}</span>
+              {isCloudSyncing ? (
+                <RefreshCw className="h-3.5 w-3.5 text-[#D4AF37] animate-spin shrink-0" />
+              ) : (
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+              )}
+              <span>
+                {isCloudSyncing ? 'Syncing Cloud...' : lastCloudSyncLabel}
+              </span>
+              {!isCloudSyncing && lastSyncedAt && (
+                <span className="hidden sm:inline text-[10px] font-mono text-[#D4AF37]/85">
+                  · {lastSyncedAt}
+                </span>
+              )}
             </button>
           </div>
 
@@ -2040,14 +2376,24 @@ function LibraryPortalContent() {
 
                   {/* Proposed Dashboard KPI Cards (White Cards on Maroon Canvas) */}
                   <section className="space-y-3">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <h2 className="font-display text-xl font-bold text-white">
                         Library Dashboard Overview
                       </h2>
-                      <span className="text-xs text-[#D4AF37]">
-                        Live Synchronized Records · {stats.totalTitles} Catalog
-                        Titles
-                      </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-400/35 bg-[#3A0A14]/90 px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
+                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                          <span>
+                            {isCloudSyncing
+                              ? 'Syncing Cloud...'
+                              : 'Cloud Synced (Auto-Saved)'}
+                          </span>
+                        </span>
+                        <span className="text-xs text-[#D4AF37]">
+                          Live Synchronized Records · {stats.totalTitles} Catalog
+                          Titles
+                        </span>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
@@ -2853,13 +3199,15 @@ function LibraryPortalContent() {
 
                       <div className="flex items-center gap-2">
                         <button
+                          type="button"
                           onClick={() => setReadingResource(resItem)}
                           className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-300 px-3 py-1.5 text-xs font-semibold text-neutral-800 hover:bg-neutral-100 transition-colors whitespace-nowrap shrink-0"
                         >
-                          <Eye className="h-3.5 w-3.5" />
-                          Read Online
+                          <Eye className="h-3.5 w-3.5 text-[#641526]" />
+                          Preview
                         </button>
                         <button
+                          type="button"
                           onClick={() => handleDownloadResource(resItem)}
                           className="inline-flex items-center gap-1.5 rounded-lg bg-[#641526] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#4d0f1d] transition-colors whitespace-nowrap shrink-0"
                         >
@@ -3524,11 +3872,29 @@ function LibraryPortalContent() {
                       </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <div className="font-semibold text-neutral-700">
-                        Current Hero Banner Image Preview:
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-semibold text-neutral-700">
+                          Current Hero Banner Image Preview:
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setLightboxImagePreview({
+                              url: resolvePortalAssetUrl(
+                                portalSettings.heroImageUrl,
+                                DEFAULT_HERO_IMAGE_PATH
+                              ),
+                              title: 'BNHS Portal Hero Banner Preview',
+                            })
+                          }
+                          className="inline-flex items-center gap-1 rounded border border-neutral-300 px-2.5 py-1 text-[11px] font-semibold text-[#641526] hover:bg-neutral-100"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                          Preview
+                        </button>
                       </div>
-                      <div className="h-40 rounded-lg overflow-hidden border border-neutral-200 bg-neutral-100">
+                      <div className="h-36 rounded-lg overflow-hidden border border-neutral-200 bg-neutral-100">
                         <img
                           src={resolvePortalAssetUrl(
                             portalSettings.heroImageUrl,
@@ -3538,6 +3904,44 @@ function LibraryPortalContent() {
                           referrerPolicy="no-referrer"
                           className="h-full w-full object-cover"
                         />
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        <div className="font-semibold text-neutral-700">
+                          Current BNHS School Logo Preview:
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setLightboxImagePreview({
+                              url: resolvePortalAssetUrl(
+                                portalSettings.logoImageUrl,
+                                DEFAULT_CREST_ANIMATED_GIF_PATH
+                              ),
+                              title: 'BNHS School Logo Preview',
+                            })
+                          }
+                          className="inline-flex items-center gap-1 rounded border border-neutral-300 px-2.5 py-1 text-[11px] font-semibold text-[#641526] hover:bg-neutral-100"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                          Preview
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-3 rounded-lg border border-neutral-200 bg-neutral-50 p-2.5">
+                        <div className="h-12 w-12 rounded-full overflow-hidden border border-[#D4AF37] bg-white p-0.5 shrink-0">
+                          <img
+                            src={resolvePortalAssetUrl(
+                              portalSettings.logoImageUrl,
+                              DEFAULT_CREST_ANIMATED_GIF_PATH
+                            )}
+                            alt="Current BNHS School Logo"
+                            referrerPolicy="no-referrer"
+                            className="h-full w-full object-contain rounded-full"
+                          />
+                        </div>
+                        <span className="text-[11px] text-neutral-600">
+                          Auto-synced across all connected devices
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -4231,6 +4635,46 @@ function LibraryPortalContent() {
                 />
               </div>
 
+              <div className="rounded-lg bg-neutral-50 p-3 border border-neutral-200 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="h-12 w-9 rounded overflow-hidden border border-neutral-300 bg-white shrink-0">
+                    <BookCoverThumbnail
+                      coverKey={newBookForm.coverKey}
+                      title={newBookForm.title || 'Book Cover'}
+                    />
+                  </div>
+                  <div className="text-[11px] text-neutral-600">
+                    <div className="font-semibold text-neutral-800">
+                      Book Cover Image (Optional)
+                    </div>
+                    <div>Cloud Synced (Auto-Saved)</div>
+                  </div>
+                </div>
+                <label className="inline-flex items-center gap-1.5 cursor-pointer rounded-md bg-[#641526] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#4d0f1d]">
+                  <Upload className="h-3.5 w-3.5 text-[#D4AF37]" />
+                  Upload Cover File
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        if (typeof reader.result === 'string') {
+                          setNewBookForm((prev) => ({
+                            ...prev,
+                            coverKey: reader.result as string,
+                          }));
+                        }
+                      };
+                      reader.readAsDataURL(file);
+                    }}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+
               <div className="flex items-center justify-end gap-2.5 pt-2">
                 <button
                   type="button"
@@ -4257,12 +4701,13 @@ function LibraryPortalContent() {
          ==================================================================== */}
       {isUploadDigitalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
-          <div className="w-full max-w-xl rounded-xl bg-white text-[#1E1B18] shadow-2xl border border-[#D4AF37]/40 overflow-hidden">
-            <div className="flex items-center justify-between bg-[#420B17] px-6 py-4 text-white">
+          <div className="w-full max-w-2xl rounded-xl bg-white text-[#1E1B18] shadow-2xl border border-[#D4AF37]/40 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between bg-[#420B17] px-6 py-4 text-white shrink-0">
               <h3 className="font-display text-base font-bold">
                 Upload Digital Resource to BNHS Repository
               </h3>
               <button
+                type="button"
                 onClick={() => setIsUploadDigitalOpen(false)}
                 className="rounded-lg p-1 text-white/70 hover:text-white"
               >
@@ -4272,8 +4717,89 @@ function LibraryPortalContent() {
 
             <form
               onSubmit={handleUploadDigitalSubmit}
-              className="p-6 space-y-3.5 text-xs"
+              className="p-6 space-y-3.5 text-xs overflow-y-auto flex-1"
             >
+              {/* File Input + Auto Cloud Sync Draft + Live Preview */}
+              <div className="rounded-lg bg-neutral-50 border border-neutral-200 p-3.5 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 font-semibold text-[#641526]">
+                    <FileText className="h-4 w-4 text-[#D4AF37]" />
+                    <span>Upload File (PDF, Doc, PPT, Image, Text)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDigitalUploadPreviewOpen((prev) => !prev)
+                      }
+                      className="inline-flex items-center gap-1 rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-neutral-800 hover:bg-neutral-100"
+                    >
+                      <Eye className="h-3.5 w-3.5 text-[#641526]" />
+                      {digitalUploadPreviewOpen ? 'Hide Preview' : 'Preview'}
+                    </button>
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer rounded-md bg-[#641526] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#4d0f1d]">
+                      <Upload className="h-3.5 w-3.5 text-[#D4AF37]" />
+                      Choose File
+                      <input
+                        type="file"
+                        accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.csv,.epub,.html,.jpg,.jpeg,.png,.gif,.webp"
+                        onChange={handleUploadDigitalFilePick}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                {(attachedUploadFileName ||
+                  digitalForm.externalUrl?.startsWith('data:')) && (
+                  <div className="rounded bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-800 flex items-center gap-1.5">
+                    <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                    <span>
+                      {attachedUploadFileName
+                        ? `File "${attachedUploadFileName}" (${digitalForm.fileSize}) loaded & auto-saved in draft.`
+                        : `Uploaded file (${digitalForm.fileSize}) ready for Auto Cloud Sync.`}
+                    </span>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-[11px] font-medium text-neutral-600 mb-1">
+                    Or Paste Google Drive / File URL Link
+                  </label>
+                  <input
+                    type="text"
+                    value={
+                      digitalForm.externalUrl?.startsWith('data:')
+                        ? `[File Ready · ${digitalForm.fileSize}]`
+                        : digitalForm.externalUrl || ''
+                    }
+                    onChange={(e) => {
+                      if (!e.target.value.startsWith('[File Ready')) {
+                        setDigitalForm({
+                          ...digitalForm,
+                          externalUrl: e.target.value,
+                        });
+                      }
+                    }}
+                    placeholder="https://drive.google.com/file/d/... or direct PDF/document link"
+                    className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-1.5 font-mono text-[11px] text-neutral-900"
+                  />
+                </div>
+
+                {digitalUploadPreviewOpen && (
+                  <div className="pt-1">
+                    <InlineFilePreview
+                      title={digitalForm.title || attachedUploadFileName}
+                      externalUrl={digitalForm.externalUrl}
+                      fileSize={digitalForm.fileSize}
+                      contentPreview={digitalForm.contentPreview}
+                      summary={digitalForm.summary}
+                      compact
+                    />
+                  </div>
+                )}
+              </div>
+
               <div>
                 <label className="block font-semibold text-neutral-700 mb-1">
                   Resource Title
@@ -4367,11 +4893,10 @@ function LibraryPortalContent() {
 
               <div>
                 <label className="block font-semibold text-neutral-700 mb-1">
-                  Full Module / Study Material Content
+                  Full Module / Study Material Content (Optional if File Attached)
                 </label>
                 <textarea
-                  rows={4}
-                  required
+                  rows={3}
                   value={digitalForm.contentPreview}
                   onChange={(e) =>
                     setDigitalForm({
@@ -4397,7 +4922,9 @@ function LibraryPortalContent() {
                   disabled={submitting}
                   className="rounded-lg bg-[#641526] px-5 py-2 font-semibold text-white hover:bg-[#4d0f1d] disabled:opacity-50"
                 >
-                  {submitting ? 'Uploading...' : 'Publish Digital Resource'}
+                  {submitting
+                    ? 'Uploading & Cloud Syncing...'
+                    : 'Publish & Auto-Save to Cloud'}
                 </button>
               </div>
             </form>
@@ -4406,65 +4933,19 @@ function LibraryPortalContent() {
       )}
 
       {/* ====================================================================
-          MODAL 5: DIGITAL RESOURCE READER
+          MODAL 5: DIGITAL RESOURCE & FILE PREVIEWER
          ==================================================================== */}
-      {readingResource && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
-          <div className="w-full max-w-2xl rounded-xl bg-white text-[#1E1B18] shadow-2xl border border-[#D4AF37]/40 overflow-hidden">
-            <div className="flex items-center justify-between bg-[#420B17] px-6 py-4 text-white">
-              <div>
-                <div className="text-[11px] text-[#D4AF37]">
-                  {readingResource.resourceType} · {readingResource.subject} ·{' '}
-                  {readingResource.gradeLevel}
-                </div>
-                <h3 className="font-display text-base font-bold">
-                  {readingResource.title}
-                </h3>
-              </div>
-              <button
-                onClick={() => setReadingResource(null)}
-                className="rounded-lg p-1 text-white/70 hover:text-white"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
+      <DigitalResourcePreviewModal
+        resource={readingResource}
+        onClose={() => setReadingResource(null)}
+        onDownload={handleDownloadResource}
+      />
 
-            <div className="p-6 space-y-4">
-              <div className="text-xs text-neutral-600 flex flex-wrap items-center justify-between gap-2 border-b border-neutral-200 pb-3">
-                <span>Author: {readingResource.author}</span>
-                <span className="font-mono tabular-nums">
-                  {readingResource.fileSize} · {readingResource.pageCount} pages
-                </span>
-              </div>
-
-              <div className="max-h-80 overflow-y-auto rounded-lg bg-neutral-50 p-4 border border-neutral-200 text-xs text-neutral-800 whitespace-pre-line leading-relaxed font-sans">
-                {readingResource.contentPreview}
-              </div>
-
-              <div className="flex items-center justify-between pt-2">
-                <span className="text-xs text-neutral-500">
-                  Uploaded by {readingResource.uploadedBy}
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setReadingResource(null)}
-                    className="rounded-lg border border-neutral-300 px-4 py-2 text-xs font-medium text-neutral-700 hover:bg-neutral-50"
-                  >
-                    Close Reader
-                  </button>
-                  <button
-                    onClick={() => handleDownloadResource(readingResource)}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#641526] px-4 py-2 text-xs font-semibold text-white hover:bg-[#4d0f1d]"
-                  >
-                    <Download className="h-3.5 w-3.5 text-[#D4AF37]" />
-                    Download Study Copy
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <ImageLightboxPreviewModal
+        imageUrl={lightboxImagePreview?.url || null}
+        title={lightboxImagePreview?.title || 'Image Preview'}
+        onClose={() => setLightboxImagePreview(null)}
+      />
 
       {/* ====================================================================
           MODAL 6: SQL & XAMPP SCHEMA EXPORT

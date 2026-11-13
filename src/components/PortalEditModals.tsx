@@ -1,5 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { X, Upload, Image as ImageIcon, Link2, Check, LogIn, ShieldCheck } from 'lucide-react';
+import {
+  X,
+  Upload,
+  Image as ImageIcon,
+  Link2,
+  Check,
+  LogIn,
+  ShieldCheck,
+  Eye,
+  FileText,
+} from 'lucide-react';
 import {
   BookItem,
   BookCategory,
@@ -9,33 +19,24 @@ import {
   UserRole,
 } from '../types.ts';
 import { BUNDLED_ASSETS, INITIAL_USERS } from '../data/bnhsInitialData.ts';
+import {
+  normalizeGoogleDriveImageUrl,
+  readFileAsResourcePayload,
+} from '../lib/filePreview.ts';
+import {
+  ImageLightboxPreviewModal,
+  InlineFilePreview,
+} from './FilePreviewModal.tsx';
 
 interface AdminPortalSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   settings: PortalSettings;
-  onSave: (updated: PortalSettings) => Promise<void>;
+  onSave: (updated: PortalSettings, silentAutoSave?: boolean) => Promise<void>;
 }
 
 function normalizeGoogleImageLink(rawUrl: string): string {
-  const trimmed = rawUrl.trim();
-  if (!trimmed) return '';
-
-  // Match Google Drive /file/d/<FILE_ID>/...
-  const fileDMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if (fileDMatch && fileDMatch[1]) {
-    return `https://drive.google.com/thumbnail?id=${fileDMatch[1]}&sz=w1920`;
-  }
-
-  // Match Google Drive ?id=<FILE_ID> or &id=<FILE_ID>
-  if (trimmed.includes('drive.google.com')) {
-    const idParamMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-    if (idParamMatch && idParamMatch[1]) {
-      return `https://drive.google.com/thumbnail?id=${idParamMatch[1]}&sz=w1920`;
-    }
-  }
-
-  return trimmed;
+  return normalizeGoogleDriveImageUrl(rawUrl);
 }
 
 export const AdminPortalSettingsModal: React.FC<
@@ -45,18 +46,39 @@ export const AdminPortalSettingsModal: React.FC<
   const [heroGoogleLink, setHeroGoogleLink] = useState('');
   const [logoGoogleLink, setLogoGoogleLink] = useState('');
   const [saving, setSaving] = useState(false);
+  const [autoSaveNote, setAutoSaveNote] = useState('');
+  const [lightboxPreview, setLightboxPreview] = useState<{
+    url: string;
+    title: string;
+  } | null>(null);
 
   useEffect(() => {
-    setForm(settings);
-    setHeroGoogleLink(
-      settings.heroImageUrl.startsWith('http') ? settings.heroImageUrl : ''
-    );
-    setLogoGoogleLink(
-      settings.logoImageUrl.startsWith('http') ? settings.logoImageUrl : ''
-    );
-  }, [settings, isOpen]);
+    if (isOpen) {
+      setForm(settings);
+      setHeroGoogleLink(
+        settings.heroImageUrl.startsWith('http') ? settings.heroImageUrl : ''
+      );
+      setLogoGoogleLink(
+        settings.logoImageUrl.startsWith('http') ? settings.logoImageUrl : ''
+      );
+      setAutoSaveNote('');
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const triggerAutoCloudSave = async (
+    nextSettings: PortalSettings,
+    label: string
+  ) => {
+    setAutoSaveNote(`Auto-saving ${label} to Cloud Sync...`);
+    try {
+      await onSave(nextSettings, true);
+      setAutoSaveNote(`${label} saved automatically to Cloud Sync.`);
+    } catch {
+      setAutoSaveNote(`${label} saved locally (queued for Cloud Sync).`);
+    }
+  };
 
   const handleImageFileUpload = (
     e: React.ChangeEvent<HTMLInputElement>,
@@ -67,7 +89,13 @@ export const AdminPortalSettingsModal: React.FC<
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === 'string') {
-        setForm((prev) => ({ ...prev, [field]: reader.result as string }));
+        const dataUrl = reader.result as string;
+        const nextSettings: PortalSettings = { ...form, [field]: dataUrl };
+        setForm(nextSettings);
+        void triggerAutoCloudSave(
+          nextSettings,
+          field === 'heroImageUrl' ? 'Hero Banner Image' : 'School Logo Image'
+        );
       }
     };
     reader.readAsDataURL(file);
@@ -75,11 +103,19 @@ export const AdminPortalSettingsModal: React.FC<
 
   const handleApplyGoogleLink = (
     rawLink: string,
-    field: 'heroImageUrl' | 'logoImageUrl'
+    field: 'heroImageUrl' | 'logoImageUrl',
+    autoSave = false
   ) => {
     const normalized = normalizeGoogleImageLink(rawLink);
     if (!normalized) return;
-    setForm((prev) => ({ ...prev, [field]: normalized }));
+    const nextSettings: PortalSettings = { ...form, [field]: normalized };
+    setForm(nextSettings);
+    if (autoSave) {
+      void triggerAutoCloudSave(
+        nextSettings,
+        field === 'heroImageUrl' ? 'Hero Banner Link' : 'School Logo Link'
+      );
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -95,7 +131,7 @@ export const AdminPortalSettingsModal: React.FC<
           ? normalizeGoogleImageLink(logoGoogleLink)
           : form.logoImageUrl,
       };
-      await onSave(nextSettings);
+      await onSave(nextSettings, false);
       onClose();
     } finally {
       setSaving(false);
@@ -161,19 +197,43 @@ export const AdminPortalSettingsModal: React.FC<
               <label className="font-semibold text-neutral-800">
                 Portal Hero Banner Image
               </label>
-              <label className="inline-flex items-center gap-1.5 cursor-pointer rounded-md bg-[#641526] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#4d0f1d]">
-                <Upload className="h-3.5 w-3.5 text-[#D4AF37]" />
-                Upload Image File
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => {
-                    setHeroGoogleLink('');
-                    handleImageFileUpload(e, 'heroImageUrl');
-                  }}
-                  className="hidden"
-                />
-              </label>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLightboxPreview({
+                      url: form.heroImageUrl || BUNDLED_ASSETS.heroBanner,
+                      title: 'Portal Hero Banner Image Preview',
+                    })
+                  }
+                  className="inline-flex items-center gap-1 rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-neutral-800 hover:bg-neutral-100"
+                >
+                  <Eye className="h-3.5 w-3.5 text-[#641526]" />
+                  Preview
+                </button>
+                <label className="inline-flex items-center gap-1.5 cursor-pointer rounded-md bg-[#641526] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#4d0f1d]">
+                  <Upload className="h-3.5 w-3.5 text-[#D4AF37]" />
+                  Upload Image File
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      setHeroGoogleLink('');
+                      handleImageFileUpload(e, 'heroImageUrl');
+                    }}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="h-28 w-full rounded-lg overflow-hidden border border-neutral-200 bg-neutral-200 relative">
+              <img
+                src={form.heroImageUrl || BUNDLED_ASSETS.heroBanner}
+                alt="Hero banner preview"
+                referrerPolicy="no-referrer"
+                className="h-full w-full object-cover"
+              />
             </div>
 
             {/* Option 2: Upload through Google Link */}
@@ -199,7 +259,7 @@ export const AdminPortalSettingsModal: React.FC<
                 <button
                   type="button"
                   onClick={() =>
-                    handleApplyGoogleLink(heroGoogleLink, 'heroImageUrl')
+                    handleApplyGoogleLink(heroGoogleLink, 'heroImageUrl', true)
                   }
                   className="inline-flex items-center gap-1 rounded-lg bg-[#D4AF37] px-3 py-1.5 text-[11px] font-bold text-[#3A0A14] hover:bg-[#e5c247] shrink-0"
                 >
@@ -208,7 +268,7 @@ export const AdminPortalSettingsModal: React.FC<
                 </button>
               </div>
               <p className="text-[10px] text-neutral-500">
-                Supports Google Drive share links (anyone with link), Google Photos links, or direct image URLs.
+                Supports Google Drive share links (anyone with link), Google Photos links, or direct image URLs. Files auto-save immediately on upload.
               </p>
             </div>
 
@@ -218,10 +278,12 @@ export const AdminPortalSettingsModal: React.FC<
                 type="button"
                 onClick={() => {
                   setHeroGoogleLink('');
-                  setForm({
+                  const next = {
                     ...form,
                     heroImageUrl: BUNDLED_ASSETS.heroBanner,
-                  });
+                  };
+                  setForm(next);
+                  void triggerAutoCloudSave(next, 'Hero Preset');
                 }}
                 className="rounded border border-neutral-300 bg-white px-2 py-0.5 text-[11px] hover:border-[#641526]"
               >
@@ -231,10 +293,12 @@ export const AdminPortalSettingsModal: React.FC<
                 type="button"
                 onClick={() => {
                   setHeroGoogleLink('');
-                  setForm({
+                  const next = {
                     ...form,
                     heroImageUrl: BUNDLED_ASSETS.coverHistory,
-                  });
+                  };
+                  setForm(next);
+                  void triggerAutoCloudSave(next, 'Hero Preset');
                 }}
                 className="rounded border border-neutral-300 bg-white px-2 py-0.5 text-[11px] hover:border-[#641526]"
               >
@@ -244,10 +308,12 @@ export const AdminPortalSettingsModal: React.FC<
                 type="button"
                 onClick={() => {
                   setHeroGoogleLink('');
-                  setForm({
+                  const next = {
                     ...form,
                     heroImageUrl: BUNDLED_ASSETS.coverScience,
-                  });
+                  };
+                  setForm(next);
+                  void triggerAutoCloudSave(next, 'Hero Preset');
                 }}
                 className="rounded border border-neutral-300 bg-white px-2 py-0.5 text-[11px] hover:border-[#641526]"
               >
@@ -262,19 +328,48 @@ export const AdminPortalSettingsModal: React.FC<
               <label className="font-semibold text-neutral-800">
                 BNHS School Logo Image (GIF / PNG / JPG)
               </label>
-              <label className="inline-flex items-center gap-1.5 cursor-pointer rounded-md bg-[#641526] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#4d0f1d]">
-                <Upload className="h-3.5 w-3.5 text-[#D4AF37]" />
-                Upload Logo File
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => {
-                    setLogoGoogleLink('');
-                    handleImageFileUpload(e, 'logoImageUrl');
-                  }}
-                  className="hidden"
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLightboxPreview({
+                      url: form.logoImageUrl || BUNDLED_ASSETS.logoAnimatedGif,
+                      title: 'BNHS School Logo Preview',
+                    })
+                  }
+                  className="inline-flex items-center gap-1 rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-neutral-800 hover:bg-neutral-100"
+                >
+                  <Eye className="h-3.5 w-3.5 text-[#641526]" />
+                  Preview
+                </button>
+                <label className="inline-flex items-center gap-1.5 cursor-pointer rounded-md bg-[#641526] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#4d0f1d]">
+                  <Upload className="h-3.5 w-3.5 text-[#D4AF37]" />
+                  Upload Logo File
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      setLogoGoogleLink('');
+                      handleImageFileUpload(e, 'logoImageUrl');
+                    }}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="h-16 w-16 rounded-full overflow-hidden border-2 border-[#D4AF37] bg-white p-0.5 shrink-0 flex items-center justify-center">
+                <img
+                  src={form.logoImageUrl || BUNDLED_ASSETS.logoAnimatedGif}
+                  alt="School Logo preview"
+                  referrerPolicy="no-referrer"
+                  className="h-full w-full object-contain rounded-full"
                 />
-              </label>
+              </div>
+              <div className="text-[11px] text-neutral-600">
+                Live School Seal Preview (auto-saves immediately when a file is selected).
+              </div>
             </div>
 
             {/* Option 2: Upload Logo through Google Link */}
@@ -300,7 +395,7 @@ export const AdminPortalSettingsModal: React.FC<
                 <button
                   type="button"
                   onClick={() =>
-                    handleApplyGoogleLink(logoGoogleLink, 'logoImageUrl')
+                    handleApplyGoogleLink(logoGoogleLink, 'logoImageUrl', true)
                   }
                   className="inline-flex items-center gap-1 rounded-lg bg-[#D4AF37] px-3 py-1.5 text-[11px] font-bold text-[#3A0A14] hover:bg-[#e5c247] shrink-0"
                 >
@@ -310,6 +405,13 @@ export const AdminPortalSettingsModal: React.FC<
               </div>
             </div>
           </div>
+
+          {autoSaveNote && (
+            <div className="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 text-[11px] font-semibold text-emerald-800 flex items-center gap-1.5">
+              <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              <span>{autoSaveNote}</span>
+            </div>
+          )}
 
           <div className="flex items-center justify-end gap-2.5 pt-2">
             <button
@@ -329,6 +431,11 @@ export const AdminPortalSettingsModal: React.FC<
           </div>
         </form>
       </div>
+      <ImageLightboxPreviewModal
+        imageUrl={lightboxPreview?.url || null}
+        title={lightboxPreview?.title || 'Image Preview'}
+        onClose={() => setLightboxPreview(null)}
+      />
     </div>
   );
 };
@@ -379,9 +486,24 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
         coverKey: book.coverKey || 'history',
       });
     }
-  }, [book]);
+  }, [book?.id]);
 
   if (!book) return null;
+
+  const handleBookCoverUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        const nextCover = reader.result as string;
+        const nextForm = { ...form, coverKey: nextCover };
+        setForm(nextForm);
+        void onSave(book.id, nextForm);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -559,6 +681,42 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
             />
           </div>
 
+          <div className="rounded-lg bg-neutral-50 p-3 border border-neutral-200 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="h-12 w-9 rounded overflow-hidden border border-neutral-300 bg-white shrink-0">
+                <img
+                  src={
+                    form.coverKey.startsWith('data:') ||
+                    form.coverKey.startsWith('http') ||
+                    form.coverKey.startsWith('/')
+                      ? form.coverKey
+                      : form.coverKey === 'science'
+                      ? BUNDLED_ASSETS.coverScience
+                      : BUNDLED_ASSETS.coverHistory
+                  }
+                  alt="Book Cover Preview"
+                  className="h-full w-full object-cover"
+                />
+              </div>
+              <div className="text-[11px] text-neutral-600">
+                <div className="font-semibold text-neutral-800">
+                  Book Cover Image
+                </div>
+                <div>Auto-saves when you upload an image file</div>
+              </div>
+            </div>
+            <label className="inline-flex items-center gap-1.5 cursor-pointer rounded-md bg-[#641526] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#4d0f1d]">
+              <Upload className="h-3.5 w-3.5 text-[#D4AF37]" />
+              Upload Cover File
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleBookCoverUpload}
+                className="hidden"
+              />
+            </label>
+          </div>
+
           <div className="flex items-center justify-end gap-2.5 pt-2">
             <button
               type="button"
@@ -603,8 +761,12 @@ export const EditDigitalResourceModal: React.FC<
     pageCount: 32,
     summary: '',
     contentPreview: '',
+    externalUrl: '',
   });
   const [saving, setSaving] = useState(false);
+  const [attachedFileName, setAttachedFileName] = useState('');
+  const [fileError, setFileError] = useState('');
+  const [showInlinePreview, setShowInlinePreview] = useState(false);
 
   useEffect(() => {
     if (resource) {
@@ -618,11 +780,40 @@ export const EditDigitalResourceModal: React.FC<
         pageCount: resource.pageCount,
         summary: resource.summary,
         contentPreview: resource.contentPreview,
+        externalUrl: resource.externalUrl || '',
       });
+      setAttachedFileName('');
+      setFileError('');
+      setShowInlinePreview(false);
     }
-  }, [resource]);
+  }, [resource?.id]);
 
   if (!resource) return null;
+
+  const handleFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileError('');
+    try {
+      const parsed = await readFileAsResourcePayload(file);
+      const nextForm = {
+        ...form,
+        fileSize: parsed.fileSizeLabel,
+        pageCount: parsed.suggestedPageCount || form.pageCount,
+        externalUrl: parsed.dataUrl,
+        contentPreview:
+          parsed.extractedText ||
+          form.contentPreview ||
+          `Uploaded file: ${parsed.fileName} (${parsed.fileSizeLabel})`,
+      };
+      setForm(nextForm);
+      setAttachedFileName(parsed.fileName);
+      setShowInlinePreview(true);
+      await onSave(resource.id, nextForm);
+    } catch (err: any) {
+      setFileError(err?.message || 'Failed to read uploaded file.');
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -637,12 +828,13 @@ export const EditDigitalResourceModal: React.FC<
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
-      <div className="w-full max-w-xl rounded-xl bg-white text-[#1E1B18] shadow-2xl border border-[#D4AF37]/40 overflow-hidden">
-        <div className="flex items-center justify-between bg-[#420B17] px-6 py-4 text-white">
+      <div className="w-full max-w-2xl rounded-xl bg-white text-[#1E1B18] shadow-2xl border border-[#D4AF37]/40 overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="flex items-center justify-between bg-[#420B17] px-6 py-4 text-white shrink-0">
           <h3 className="font-display text-base font-bold">
             Edit Digital Library Resource
           </h3>
           <button
+            type="button"
             onClick={onClose}
             className="rounded-lg p-1 text-white/70 hover:text-white"
           >
@@ -650,7 +842,89 @@ export const EditDigitalResourceModal: React.FC<
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-3.5 text-xs">
+        <form
+          onSubmit={handleSubmit}
+          className="p-6 space-y-3.5 text-xs overflow-y-auto flex-1"
+        >
+          {/* File Upload & Preview Box */}
+          <div className="rounded-lg bg-neutral-50 border border-neutral-200 p-3.5 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 font-semibold text-[#641526]">
+                <FileText className="h-4 w-4 text-[#D4AF37]" />
+                <span>Attach / Replace Learning File (PDF, Doc, Image, Text)</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setShowInlinePreview((prev) => !prev)}
+                  className="inline-flex items-center gap-1 rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-neutral-800 hover:bg-neutral-100"
+                >
+                  <Eye className="h-3.5 w-3.5 text-[#641526]" />
+                  {showInlinePreview ? 'Hide Preview' : 'Preview File'}
+                </button>
+                <label className="inline-flex items-center gap-1.5 cursor-pointer rounded-md bg-[#641526] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#4d0f1d]">
+                  <Upload className="h-3.5 w-3.5 text-[#D4AF37]" />
+                  Upload File
+                  <input
+                    type="file"
+                    accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.csv,.epub,.html,.jpg,.jpeg,.png,.gif,.webp"
+                    onChange={handleFilePicked}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
+
+            {attachedFileName && (
+              <div className="rounded bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-800 flex items-center gap-1.5">
+                <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                <span>
+                  Attached "{attachedFileName}" ({form.fileSize}) — Auto-saved to Cloud Sync!
+                </span>
+              </div>
+            )}
+
+            {fileError && (
+              <div className="rounded bg-red-50 border border-red-200 px-2.5 py-1.5 text-[11px] font-medium text-red-700">
+                {fileError}
+              </div>
+            )}
+
+            <div>
+              <label className="block text-[11px] font-medium text-neutral-600 mb-1">
+                Or Google Drive / File URL
+              </label>
+              <input
+                type="text"
+                value={
+                  form.externalUrl.startsWith('data:')
+                    ? `[Uploaded File Saved · ${form.fileSize}]`
+                    : form.externalUrl
+                }
+                onChange={(e) => {
+                  if (!e.target.value.startsWith('[Uploaded File Saved')) {
+                    setForm({ ...form, externalUrl: e.target.value });
+                  }
+                }}
+                placeholder="https://drive.google.com/file/d/... or direct file URL"
+                className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-1.5 font-mono text-[11px] text-neutral-800"
+              />
+            </div>
+
+            {showInlinePreview && (
+              <div className="pt-1">
+                <InlineFilePreview
+                  title={form.title}
+                  externalUrl={form.externalUrl}
+                  fileSize={form.fileSize}
+                  contentPreview={form.contentPreview}
+                  summary={form.summary}
+                  compact
+                />
+              </div>
+            )}
+          </div>
+
           <div>
             <label className="block font-semibold text-neutral-700 mb-1">
               Resource Title
@@ -778,7 +1052,6 @@ export const EditDigitalResourceModal: React.FC<
             </label>
             <textarea
               rows={4}
-              required
               value={form.contentPreview}
               onChange={(e) =>
                 setForm({ ...form, contentPreview: e.target.value })
@@ -1037,7 +1310,7 @@ export const EditCategoryModal: React.FC<EditCategoryModalProps> = ({
         description: category.description,
       });
     }
-  }, [category]);
+  }, [category?.id]);
 
   if (!category) return null;
 

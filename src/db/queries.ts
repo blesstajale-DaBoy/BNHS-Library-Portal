@@ -422,6 +422,130 @@ export async function ensureInitialLibrarySeed() {
   } catch (error) {
     console.error('Failed to seed initial library records:', error);
   }
+
+  try {
+    const existingDigital = await db.select().from(digitalResources);
+    if (existingDigital.length === 0) {
+      const flagRows = await db
+        .select()
+        .from(portalSyncState)
+        .where(eq(portalSyncState.stateKey, 'seeded_digital_v1'));
+
+      if (flagRows.length === 0) {
+        await db.insert(digitalResources).values([
+          {
+            title:
+              'DepEd Senior High School Practical Research 2 Self-Learning Module (Quarters 1–2)',
+            author:
+              'DepEd Caraga Regional Office — Curriculum & Learning Management Division',
+            resourceType: 'Module',
+            subject: 'Practical Research 2',
+            gradeLevel: 'Grade 12 (All Tracks)',
+            fileSize: '4.8 MB PDF',
+            pageCount: 64,
+            downloadCount: 342,
+            summary:
+              'Official DepEd self-learning module covering nature of quantitative inquiry, identifying variables, formulating conceptual frameworks, and hypothesis testing.',
+            contentPreview:
+              'MODULE 1: NATURE OF INQUIRY AND RESEARCH\n\nQuantitative research uses scientifically collected and statistically analyzed data to investigate observable phenomena at Barobo National High School and the broader Caraga community.\n\nLesson 1: Characteristics, Strengths, Weaknesses & Kinds of Quantitative Research\nLesson 2: Importance of Quantitative Research Across Fields (STEM, ABM, HUMSS, TVL)\nLesson 3: Nature of Variables — Independent, Dependent, Extraneous, and Confounding Variables',
+            externalUrl: '#module-pr2',
+            uploadedBy: 'Mrs. Elena G. Cañete (Head Librarian)',
+          },
+          {
+            title:
+              'Barobo National High School Student Research Compendium (Vol. 8, AY 2025–2026)',
+            author: 'BNHS Senior High School Research Committee',
+            resourceType: 'Journal',
+            subject: 'Multidisciplinary Research',
+            gradeLevel: 'Grade 11–12',
+            fileSize: '6.2 MB PDF',
+            pageCount: 92,
+            downloadCount: 218,
+            summary:
+              'Peer-reviewed compilation of best student capstone and quantitative studies from STEM, ABM, HUMSS, and TVL strands at BNHS.',
+            contentPreview:
+              'BAROBO NATIONAL HIGH SCHOOL RESEARCH COMPENDIUM — VOLUME 8\n\nFeatured Studies:\n• Automated Library Cataloging & Circulation Tracking for Public Secondary Schools in Surigao del Sur\n• Coastal Water Quality and Mangrove Biodiversity Assessment along Barobo Bay\n• Financial Literacy and Budgeting Practices among Grade 12 ABM Learners',
+            externalUrl: '#journal-bnhs-v8',
+            uploadedBy: 'Dr. Noel V. Salazar (Research Coordinator)',
+          },
+          {
+            title:
+              'General Mathematics & Statistics Formula Handbook for JHS and SHS',
+            author: 'BNHS Mathematics Department',
+            resourceType: 'PDF Learning Material',
+            subject: 'Mathematics',
+            gradeLevel: 'Grades 9–12',
+            fileSize: '2.4 MB PDF',
+            pageCount: 38,
+            downloadCount: 419,
+            summary:
+              'Quick-reference compilation of functions, business mathematics, annuities, normal distribution tables, t-test, ANOVA, and Pearson r formulas.',
+            contentPreview:
+              'BNHS MATHEMATICS DEPARTMENT REFERENCE GUIDE\n\nSection 1: Rational, Exponential & Logarithmic Functions\nSection 2: Simple & Compound Interest, Annuities, Stocks & Bonds\nSection 3: Standard Normal Distribution z-Table & One-Sample / Independent Samples t-Test Formulas',
+            externalUrl: '#math-handbook',
+            uploadedBy: 'Mrs. Elena G. Cañete (Head Librarian)',
+          },
+          {
+            title:
+              'Philippine Literature & Caraga Folk Narratives E-Book Anthology',
+            author: 'Komisyon sa Wikang Filipino & DepEd Surigao del Sur',
+            resourceType: 'E-Book',
+            subject: 'Literature & Humanities',
+            gradeLevel: 'Grades 7–12',
+            fileSize: '5.1 MB EPUB/PDF',
+            pageCount: 110,
+            downloadCount: 187,
+            summary:
+              'Digital anthology featuring Kamayo, Surigaonon, and Manobo oral epics, contemporary Mindanaoan short stories, and critical annotations.',
+            contentPreview:
+              'PART I: ORAL TRADITIONS OF SURIGAO DEL SUR & CARAGA\n\nThis e-book preserves local narratives from Barobo, Hinatuan, Lianga, and Tagbina, annotated for 21st Century Literature learners with reading comprehension prompts.',
+            externalUrl: '#caraga-ebook',
+            uploadedBy: 'Ms. Marissa T. Ocampo (Filipino Dept.)',
+          },
+          {
+            title:
+              'Full-Stack Web Development with PHP, MySQL & XAMPP Laboratory Manual',
+            author: 'BNHS TVL-ICT Track Faculty',
+            resourceType: 'PDF Learning Material',
+            subject: 'ICT & Computer Programming',
+            gradeLevel: 'Grades 11–12 TVL-ICT',
+            fileSize: '3.9 MB PDF',
+            pageCount: 54,
+            downloadCount: 276,
+            summary:
+              'Step-by-step laboratory exercises on configuring Apache and MySQL in XAMPP, designing normalized relational tables, and writing secure PDO CRUD queries.',
+            contentPreview:
+              'LABORATORY MANUAL: DATABASE-DRIVEN WEB SYSTEMS (PHP & MySQL)\n\nLab 1: Starting Apache & MySQL Services in XAMPP Control Panel\nLab 2: Importing Library SQL Schemas in phpMyAdmin\nLab 3: Building Responsive Library Catalog Search with Bootstrap & PDO',
+            externalUrl: '#ict-lab-manual',
+            uploadedBy: 'Engr. Dennis A. Cortez (ICT Coordinator)',
+          },
+          {
+            title:
+              'APA 7th Edition Citation, Bibliography & Academic Integrity Style Guide',
+            author: 'BNHS Library & Information Services',
+            resourceType: 'Reference',
+            subject: 'Research & Academic Writing',
+            gradeLevel: 'All Grade Levels',
+            fileSize: '1.6 MB PDF',
+            pageCount: 24,
+            downloadCount: 512,
+            summary:
+              'Official BNHS citation manual with examples for books, journal articles, DepEd orders, government statutes, and online digital repositories.',
+            contentPreview:
+              'BNHS OFFICIAL APA 7TH EDITION STYLE GUIDE\n\n1. In-Text Citations (Author-Date System)\n2. Reference List Formatting Rules for Printed Books, E-Books, and Peer-Reviewed Journals\n3. Ethical AI & Plagiarism Prevention Checklist for BNHS Student Researchers',
+            externalUrl: '#apa7-guide',
+            uploadedBy: 'Mrs. Elena G. Cañete (Head Librarian)',
+          },
+        ]);
+        await db
+          .insert(portalSyncState)
+          .values({ stateKey: 'seeded_digital_v1', stateJson: 'true' })
+          .onConflictDoNothing();
+      }
+    }
+  } catch (error) {
+    console.error('Failed to seed initial digital resources:', error);
+  }
 }
 
 export async function getLibraryOverviewData() {
@@ -744,22 +868,38 @@ export async function updateDigitalResourceRecord(
     pageCount: number;
     summary: string;
     contentPreview: string;
+    externalUrl?: string;
   }
 ) {
   try {
+    const updateValues: {
+      title: string;
+      author: string;
+      resourceType: string;
+      subject: string;
+      gradeLevel: string;
+      fileSize: string;
+      pageCount: number;
+      summary: string;
+      contentPreview: string;
+      externalUrl?: string;
+    } = {
+      title: data.title,
+      author: data.author,
+      resourceType: data.resourceType,
+      subject: data.subject,
+      gradeLevel: data.gradeLevel,
+      fileSize: data.fileSize || '2.5 MB PDF',
+      pageCount: Number(data.pageCount) || 24,
+      summary: data.summary,
+      contentPreview: data.contentPreview,
+    };
+    if (data.externalUrl !== undefined) {
+      updateValues.externalUrl = data.externalUrl;
+    }
     const updated = await db
       .update(digitalResources)
-      .set({
-        title: data.title,
-        author: data.author,
-        resourceType: data.resourceType,
-        subject: data.subject,
-        gradeLevel: data.gradeLevel,
-        fileSize: data.fileSize || '2.5 MB PDF',
-        pageCount: Number(data.pageCount) || 24,
-        summary: data.summary,
-        contentPreview: data.contentPreview,
-      })
+      .set(updateValues)
       .where(eq(digitalResources.id, resourceId))
       .returning();
     return updated[0];
