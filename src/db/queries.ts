@@ -9,6 +9,11 @@ import {
 } from './schema.ts';
 import { eq, desc, sql } from 'drizzle-orm';
 
+const MAX_PG_INT32 = 2147483647;
+function isPgInt32(id: number): boolean {
+  return Number.isInteger(id) && id > 0 && id <= MAX_PG_INT32;
+}
+
 export async function getOrCreateUser(
   uid: string,
   email: string,
@@ -641,7 +646,7 @@ export async function createBookRecord(data: {
 
 export async function updateBookRecord(
   bookId: number,
-  data: {
+  data: Partial<{
     title: string;
     author: string;
     isbn: string;
@@ -654,29 +659,37 @@ export async function updateBookRecord(
     availableCopies: number;
     description: string;
     coverKey?: string;
-  }
+  }>
 ) {
   try {
-    const total = Math.max(1, Number(data.totalCopies) || 1);
+    if (!isPgInt32(bookId)) {
+      throw new Error('Invalid book ID for update.');
+    }
+    const existingRows = await db.select().from(books).where(eq(books.id, bookId));
+    const prev = existingRows[0];
+    if (!prev) {
+      throw new Error('Book record not found in Cloud SQL.');
+    }
+    const total = Math.max(1, Number(data.totalCopies ?? prev.totalCopies) || 1);
     const avail = Math.min(
       total,
-      Math.max(0, Number(data.availableCopies ?? total))
+      Math.max(0, Number(data.availableCopies ?? prev.availableCopies ?? total))
     );
     const updated = await db
       .update(books)
       .set({
-        title: data.title,
-        author: data.author,
-        isbn: data.isbn,
-        subject: data.subject,
-        category: data.category,
-        publisher: data.publisher,
-        publicationYear: Number(data.publicationYear) || 2026,
-        shelfLocation: data.shelfLocation,
+        title: (data.title ?? prev.title).trim(),
+        author: (data.author ?? prev.author).trim(),
+        isbn: (data.isbn ?? prev.isbn).trim(),
+        subject: (data.subject ?? prev.subject).trim(),
+        category: (data.category ?? prev.category).trim(),
+        publisher: (data.publisher ?? prev.publisher).trim(),
+        publicationYear: Number(data.publicationYear ?? prev.publicationYear) || 2026,
+        shelfLocation: (data.shelfLocation ?? prev.shelfLocation).trim(),
         totalCopies: total,
         availableCopies: avail,
-        description: data.description,
-        coverKey: data.coverKey || 'history',
+        description: data.description ?? prev.description,
+        coverKey: data.coverKey ?? prev.coverKey ?? 'history',
       })
       .where(eq(books.id, bookId))
       .returning();
@@ -689,6 +702,9 @@ export async function updateBookRecord(
 
 export async function deleteBookRecord(bookId: number) {
   try {
+    if (!isPgInt32(bookId)) {
+      return undefined;
+    }
     await db.delete(borrowRecords).where(eq(borrowRecords.bookId, bookId));
     const deleted = await db
       .delete(books)
@@ -858,7 +874,7 @@ export async function createDigitalResourceRecord(data: {
 
 export async function updateDigitalResourceRecord(
   resourceId: number,
-  data: {
+  data: Partial<{
     title: string;
     author: string;
     resourceType: string;
@@ -869,38 +885,55 @@ export async function updateDigitalResourceRecord(
     summary: string;
     contentPreview: string;
     externalUrl?: string;
-  }
+    uploadedBy?: string;
+  }>
 ) {
   try {
-    const updateValues: {
-      title: string;
-      author: string;
-      resourceType: string;
-      subject: string;
-      gradeLevel: string;
-      fileSize: string;
-      pageCount: number;
-      summary: string;
-      contentPreview: string;
-      externalUrl?: string;
-    } = {
-      title: data.title,
-      author: data.author,
-      resourceType: data.resourceType,
-      subject: data.subject,
-      gradeLevel: data.gradeLevel,
-      fileSize: data.fileSize || '2.5 MB PDF',
-      pageCount: Number(data.pageCount) || 24,
-      summary: data.summary,
-      contentPreview: data.contentPreview,
-    };
-    if (data.externalUrl !== undefined) {
-      updateValues.externalUrl = data.externalUrl;
+    const existingRows = isPgInt32(resourceId)
+      ? await db
+          .select()
+          .from(digitalResources)
+          .where(eq(digitalResources.id, resourceId))
+      : [];
+    const prev = existingRows[0];
+
+    if (!prev) {
+      const inserted = await db
+        .insert(digitalResources)
+        .values({
+          title: (data.title || 'Digital Resource').trim(),
+          author: (data.author || 'BNHS Faculty').trim(),
+          resourceType: data.resourceType || 'PDF Learning Material',
+          subject: data.subject || 'General',
+          gradeLevel: data.gradeLevel || 'All Grade Levels',
+          fileSize: data.fileSize || '2.5 MB PDF',
+          pageCount: Number(data.pageCount) || 24,
+          downloadCount: 1,
+          summary: data.summary || '',
+          contentPreview: data.contentPreview || '',
+          externalUrl: data.externalUrl || '',
+          uploadedBy: data.uploadedBy || 'BNHS Librarian',
+        })
+        .returning();
+      return inserted[0];
     }
+
     const updated = await db
       .update(digitalResources)
-      .set(updateValues)
-      .where(eq(digitalResources.id, resourceId))
+      .set({
+        title: (data.title ?? prev.title).trim(),
+        author: (data.author ?? prev.author).trim(),
+        resourceType: data.resourceType ?? prev.resourceType,
+        subject: data.subject ?? prev.subject,
+        gradeLevel: data.gradeLevel ?? prev.gradeLevel,
+        fileSize: data.fileSize ?? prev.fileSize ?? '2.5 MB PDF',
+        pageCount: Number(data.pageCount ?? prev.pageCount) || 24,
+        summary: data.summary ?? prev.summary,
+        contentPreview: data.contentPreview ?? prev.contentPreview,
+        externalUrl:
+          data.externalUrl !== undefined ? data.externalUrl : prev.externalUrl,
+      })
+      .where(eq(digitalResources.id, prev.id))
       .returning();
     return updated[0];
   } catch (error) {
@@ -913,6 +946,9 @@ export async function updateDigitalResourceRecord(
 
 export async function deleteDigitalResourceRecord(resourceId: number) {
   try {
+    if (!isPgInt32(resourceId)) {
+      return undefined;
+    }
     const deleted = await db
       .delete(digitalResources)
       .where(eq(digitalResources.id, resourceId))
@@ -964,21 +1000,32 @@ export async function createCategoryRecord(data: {
 
 export async function updateCategoryRecord(
   categoryId: number,
-  data: {
+  data: Partial<{
     name: string;
     code: string;
     shelfZone: string;
     description: string;
-  }
+  }>
 ) {
   try {
+    if (!isPgInt32(categoryId)) {
+      throw new Error('Invalid category ID.');
+    }
+    const existingRows = await db
+      .select()
+      .from(categories)
+      .where(eq(categories.id, categoryId));
+    const prev = existingRows[0];
+    if (!prev) {
+      throw new Error('Category not found.');
+    }
     const updated = await db
       .update(categories)
       .set({
-        name: data.name,
-        code: data.code,
-        shelfZone: data.shelfZone,
-        description: data.description,
+        name: (data.name ?? prev.name).trim(),
+        code: (data.code ?? prev.code).trim(),
+        shelfZone: (data.shelfZone ?? prev.shelfZone).trim(),
+        description: data.description ?? prev.description,
       })
       .where(eq(categories.id, categoryId))
       .returning();
@@ -991,6 +1038,9 @@ export async function updateCategoryRecord(
 
 export async function deleteCategoryRecord(categoryId: number) {
   try {
+    if (!isPgInt32(categoryId)) {
+      return undefined;
+    }
     const deleted = await db
       .delete(categories)
       .where(eq(categories.id, categoryId))
@@ -1028,7 +1078,7 @@ export async function updateUserRoleRecord(
 
 export async function updateUserRecord(
   userId: number,
-  data: {
+  data: Partial<{
     uid?: string;
     fullName: string;
     email: string;
@@ -1036,13 +1086,12 @@ export async function updateUserRecord(
     idNumber: string;
     gradeOrDepartment: string;
     status?: string;
-  }
+  }>
 ) {
   try {
-    let existingRows = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, userId));
+    let existingRows = isPgInt32(userId)
+      ? await db.select().from(users).where(eq(users.id, userId))
+      : [];
 
     if (existingRows.length === 0 && data.uid) {
       existingRows = await db
@@ -1061,17 +1110,40 @@ export async function updateUserRecord(
     const prevUser = existingRows[0];
     const targetId = prevUser ? prevUser.id : userId;
 
+    const resolvedFullName = (
+      data.fullName ??
+      prevUser?.fullName ??
+      'BNHS Member'
+    ).trim();
+    const resolvedEmail = (
+      data.email ??
+      prevUser?.email ??
+      'member@bnhs.edu.ph'
+    ).trim();
+    const resolvedRole = data.role ?? prevUser?.role ?? 'Student';
+    const resolvedIdNumber = (
+      data.idNumber ??
+      prevUser?.idNumber ??
+      'BNHS-2026'
+    ).trim();
+    const resolvedDept = (
+      data.gradeOrDepartment ??
+      prevUser?.gradeOrDepartment ??
+      'BNHS Library'
+    ).trim();
+    const resolvedStatus = data.status ?? prevUser?.status ?? 'Active';
+
     let resultUser;
     if (prevUser) {
       const updated = await db
         .update(users)
         .set({
-          fullName: data.fullName.trim(),
-          email: data.email.trim(),
-          role: data.role,
-          idNumber: data.idNumber.trim(),
-          gradeOrDepartment: data.gradeOrDepartment.trim(),
-          status: data.status || 'Active',
+          fullName: resolvedFullName,
+          email: resolvedEmail,
+          role: resolvedRole,
+          idNumber: resolvedIdNumber,
+          gradeOrDepartment: resolvedDept,
+          status: resolvedStatus,
         })
         .where(eq(users.id, targetId))
         .returning();
@@ -1082,34 +1154,34 @@ export async function updateUserRecord(
         .insert(users)
         .values({
           uid,
-          fullName: data.fullName.trim(),
-          email: data.email.trim(),
-          role: data.role,
-          idNumber: data.idNumber.trim(),
-          gradeOrDepartment: data.gradeOrDepartment.trim(),
-          status: data.status || 'Active',
+          fullName: resolvedFullName,
+          email: resolvedEmail,
+          role: resolvedRole,
+          idNumber: resolvedIdNumber,
+          gradeOrDepartment: resolvedDept,
+          status: resolvedStatus,
         })
         .onConflictDoUpdate({
           target: users.uid,
           set: {
-            fullName: data.fullName.trim(),
-            email: data.email.trim(),
-            role: data.role,
-            idNumber: data.idNumber.trim(),
-            gradeOrDepartment: data.gradeOrDepartment.trim(),
-            status: data.status || 'Active',
+            fullName: resolvedFullName,
+            email: resolvedEmail,
+            role: resolvedRole,
+            idNumber: resolvedIdNumber,
+            gradeOrDepartment: resolvedDept,
+            status: resolvedStatus,
           },
         })
         .returning();
       resultUser = inserted[0];
     }
 
-    if (prevUser && prevUser.fullName !== data.fullName.trim()) {
+    if (prevUser && prevUser.fullName !== resolvedFullName) {
       await db
         .update(borrowRecords)
         .set({
-          borrowerName: data.fullName.trim(),
-          borrowerIdNumber: data.idNumber.trim(),
+          borrowerName: resolvedFullName,
+          borrowerIdNumber: resolvedIdNumber,
         })
         .where(eq(borrowRecords.borrowerName, prevUser.fullName));
     }
@@ -1125,10 +1197,9 @@ export async function updateUserRecord(
 
 export async function deleteUserRecord(userId: number, uid?: string) {
   try {
-    let existingRows = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, userId));
+    let existingRows = isPgInt32(userId)
+      ? await db.select().from(users).where(eq(users.id, userId))
+      : [];
 
     if (existingRows.length === 0 && uid) {
       existingRows = await db
@@ -1149,6 +1220,10 @@ export async function deleteUserRecord(userId: number, uid?: string) {
           target.uid,
         ]);
       }
+    }
+
+    if (!target && !isPgInt32(userId)) {
+      return undefined;
     }
 
     const deleted = await db

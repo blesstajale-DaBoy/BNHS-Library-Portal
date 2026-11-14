@@ -663,6 +663,19 @@ async function startServer() {
 
   app.use(express.json({ limit: '50mb' }));
 
+  // Ensure API JSON responses are never cached across Preview & Live Published containers
+  app.use('/api', (req, res, next) => {
+    if (!req.path.startsWith('/portal-assets/')) {
+      res.setHeader(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, proxy-revalidate'
+      );
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
+    next();
+  });
+
   // Serve static images & animated GIFs from /assets (public/assets) without intercepting Vite /src/assets module imports
   app.use('/assets', express.static(path.join(__dirname, 'public/assets')));
 
@@ -790,6 +803,11 @@ async function startServer() {
             'digital_resources_snapshot',
             incomingDigital
           );
+          for (const item of incomingDigital) {
+            if (item && typeof item.id === 'number' && item.id > 0 && item.id <= 2147483647) {
+              await updateDigitalResourceRecord(item.id, item).catch(() => {});
+            }
+          }
         } catch (_err) {
           // Fallback memory updated
         }

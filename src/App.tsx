@@ -562,32 +562,42 @@ function LibraryPortalContent() {
     if (silent && isPushingCloudRef.current) return;
     if (!silent) setIsCloudSyncing(true);
     try {
-      const res = await fetch('/api/library/overview');
+      const res = await fetch('/api/library/overview', {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' },
+      });
       if (!res.ok) {
         throw new Error('Failed to fetch library records');
       }
       const data = await res.json();
       if (silent && isPushingCloudRef.current) return;
       skipNextAutoSyncRef.current = true;
-      if (Array.isArray(data.books) && data.books.length > 0) {
+      if (Array.isArray(data.books)) {
         setBooks(data.books);
       }
-      if (Array.isArray(data.borrowRecords) && data.borrowRecords.length > 0) {
+      if (Array.isArray(data.borrowRecords)) {
         setBorrowRecords(data.borrowRecords);
       }
-      if (
-        Array.isArray(data.digitalResources) &&
-        data.digitalResources.length > 0
-      ) {
-        const mergedDigital = applyLocalDigitalOverrides(data.digitalResources);
-        setDigitalResources(mergedDigital);
-        saveDigitalResourcesCache(mergedDigital);
+      if (Array.isArray(data.digitalResources)) {
+        setDigitalResources(data.digitalResources);
+        saveDigitalResourcesCache(data.digitalResources);
+        try {
+          localStorage.removeItem(DIGITAL_EDITS_CACHE_KEY);
+        } catch {
+          // ignore
+        }
       }
-      if (Array.isArray(data.categories) && data.categories.length > 0) {
+      if (Array.isArray(data.categories)) {
         setCategories(data.categories);
       }
-      if (Array.isArray(data.users) && data.users.length > 0) {
-        setUsers(applyLocalUserOverrides(data.users));
+      if (Array.isArray(data.users)) {
+        setUsers(data.users);
+        try {
+          localStorage.removeItem(USER_EDITS_STORAGE_KEY);
+          localStorage.removeItem(USER_DELETED_STORAGE_KEY);
+        } catch {
+          // ignore
+        }
       }
       if (data.portalSettings) {
         const resolvedSettings: PortalSettings = {
@@ -613,10 +623,7 @@ function LibraryPortalContent() {
           // ignore storage quota errors
         }
       }
-      if (
-        Array.isArray(data.waitlistRequests) &&
-        data.waitlistRequests.length > 0
-      ) {
+      if (Array.isArray(data.waitlistRequests)) {
         setWaitlistRequests(data.waitlistRequests);
       }
       markCloudSyncedAutoSaved();
@@ -727,7 +734,7 @@ function LibraryPortalContent() {
 
     const syncInterval = window.setInterval(() => {
       fetchOverview(true);
-    }, 15000);
+    }, 5000);
 
     const handleVisibilityOrOnline = () => {
       if (document.visibilityState === 'visible') {
@@ -735,11 +742,13 @@ function LibraryPortalContent() {
       }
     };
     window.addEventListener('online', handleVisibilityOrOnline);
+    window.addEventListener('focus', handleVisibilityOrOnline);
     document.addEventListener('visibilitychange', handleVisibilityOrOnline);
 
     return () => {
       window.clearInterval(syncInterval);
       window.removeEventListener('online', handleVisibilityOrOnline);
+      window.removeEventListener('focus', handleVisibilityOrOnline);
       document.removeEventListener(
         'visibilitychange',
         handleVisibilityOrOnline
@@ -1305,7 +1314,15 @@ function LibraryPortalContent() {
       const savedResource: DigitalResource =
         res.ok && data.resource ? data.resource : localNewItem;
 
-      saveDigitalResourceOverride(savedResource);
+      if (!res.ok) {
+        saveDigitalResourceOverride(savedResource);
+      } else {
+        try {
+          localStorage.removeItem(DIGITAL_EDITS_CACHE_KEY);
+        } catch {
+          // ignore
+        }
+      }
       const nextList = [
         savedResource,
         ...digitalResources.filter((r) => r.id !== savedResource.id),
@@ -1313,6 +1330,9 @@ function LibraryPortalContent() {
       setDigitalResources(nextList);
       saveDigitalResourcesCache(nextList);
       await pushAutoCloudSync(portalSettings, nextList, true);
+      if (res.ok) {
+        void fetchOverview(true);
+      }
 
       try {
         localStorage.removeItem(DIGITAL_DRAFT_STORAGE_KEY);
@@ -1396,13 +1416,18 @@ function LibraryPortalContent() {
         const data = await res.json();
         if (data?.resource) {
           const syncedItem = { ...mergedLocal, ...data.resource };
-          saveDigitalResourceOverride(syncedItem);
           const syncedList = optimisticList.map((r) =>
             r.id === resourceId ? syncedItem : r
           );
           setDigitalResources(syncedList);
           saveDigitalResourcesCache(syncedList);
+          try {
+            localStorage.removeItem(DIGITAL_EDITS_CACHE_KEY);
+          } catch {
+            // ignore
+          }
           await pushAutoCloudSync(portalSettings, syncedList, true);
+          void fetchOverview(true);
         }
       }
       showToast(
@@ -1605,11 +1630,11 @@ function LibraryPortalContent() {
         role: payload.role as UserRole,
         status: 'Active',
       };
-      saveUserEditToLocalCache(createdUser);
       setUsers((prev) => [
         createdUser,
         ...prev.filter((u) => u.id !== createdUser.id),
       ]);
+      void fetchOverview(true);
       setMemberForm({
         editingExistingId: 0,
         fullName: '',
@@ -1708,7 +1733,6 @@ function LibraryPortalContent() {
             id: data.user.id || userId,
             uid: data.user.uid || updatedUserObj.uid,
           };
-          saveUserEditToLocalCache(mergedServerUser);
           setUsers((prev) =>
             prev.map((u) =>
               u.id === userId || u.id === mergedServerUser.id
@@ -1716,7 +1740,13 @@ function LibraryPortalContent() {
                 : u
             )
           );
+          try {
+            localStorage.removeItem(USER_EDITS_STORAGE_KEY);
+          } catch {
+            // ignore
+          }
         }
+        void fetchOverview(true);
       }
     } catch {
       // Local state and localStorage cache already updated
@@ -1750,7 +1780,7 @@ function LibraryPortalContent() {
 
     try {
       const headers = await getAuthHeaders();
-      await fetch(
+      const res = await fetch(
         `/api/users/${userItem.id}?uid=${encodeURIComponent(
           userItem.uid || ''
         )}`,
@@ -1759,6 +1789,14 @@ function LibraryPortalContent() {
           headers,
         }
       );
+      if (res.ok) {
+        try {
+          localStorage.removeItem(USER_DELETED_STORAGE_KEY);
+        } catch {
+          // ignore
+        }
+        void fetchOverview(true);
+      }
     } catch {
       // Deletion already applied locally
     }
@@ -1784,11 +1822,19 @@ function LibraryPortalContent() {
 
     try {
       const headers = await getAuthHeaders();
-      await fetch(`/api/users/${userItem.id}/role`, {
+      const res = await fetch(`/api/users/${userItem.id}/role`, {
         method: 'PATCH',
         headers,
         body: JSON.stringify({ role: nextRole }),
       });
+      if (res.ok) {
+        try {
+          localStorage.removeItem(USER_EDITS_STORAGE_KEY);
+        } catch {
+          // ignore
+        }
+        void fetchOverview(true);
+      }
     } catch {
       // Role change already persisted locally
     }
