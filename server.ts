@@ -803,9 +803,30 @@ async function startServer() {
             'digital_resources_snapshot',
             incomingDigital
           );
+          const hasClientTempIds = incomingDigital.some(
+            (item: any) =>
+              item && typeof item.id === 'number' && item.id > 2147483647
+          );
+          const existingDbDigital = hasClientTempIds
+            ? (await getLibraryOverviewData()).digitalResources
+            : [];
           for (const item of incomingDigital) {
-            if (item && typeof item.id === 'number' && item.id > 0 && item.id <= 2147483647) {
+            if (!item || typeof item.id !== 'number') continue;
+            if (item.id > 0 && item.id <= 2147483647) {
               await updateDigitalResourceRecord(item.id, item).catch(() => {});
+            } else if (item.id > 2147483647 && item.title) {
+              const matched = existingDbDigital.find(
+                (dbItem) =>
+                  dbItem.title === item.title &&
+                  dbItem.uploadedBy === item.uploadedBy
+              );
+              if (matched) {
+                await updateDigitalResourceRecord(matched.id, item).catch(
+                  () => {}
+                );
+              } else {
+                await createDigitalResourceRecord(item).catch(() => {});
+              }
             }
           }
         } catch (_err) {

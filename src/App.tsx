@@ -534,6 +534,7 @@ function LibraryPortalContent() {
   const isPushingCloudRef = useRef(false);
   const hasHydratedInitialRef = useRef(false);
   const skipNextAutoSyncRef = useRef(false);
+  const memberFormDirtyRef = useRef(false);
 
   const markCloudSyncedAutoSaved = () => {
     const nowTime = new Date().toLocaleTimeString([], {
@@ -719,6 +720,27 @@ function LibraryPortalContent() {
     }, 800);
     return () => window.clearTimeout(timer);
   }, [portalSettings, digitalResources, waitlistRequests]);
+
+  // Automatic debounced Cloud Sync when editing an existing member inside the inline Users & Permissions panel
+  useEffect(() => {
+    if (!memberFormDirtyRef.current || memberForm.editingExistingId <= 0) return;
+    if (!memberForm.fullName.trim()) return;
+    const timer = window.setTimeout(() => {
+      memberFormDirtyRef.current = false;
+      void handleUpdateUser(
+        memberForm.editingExistingId,
+        {
+          fullName: memberForm.fullName.trim(),
+          email: memberForm.email.trim(),
+          role: memberForm.role as UserRole,
+          idNumber: memberForm.idNumber.trim(),
+          gradeOrDepartment: memberForm.gradeOrDepartment.trim(),
+        },
+        true
+      );
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [memberForm]);
 
   // Initial load + Automatic Background Cloud Sync across mobile, tablet, laptop & desktop
   useEffect(() => {
@@ -1092,9 +1114,10 @@ function LibraryPortalContent() {
         description: '',
         coverKey: 'history',
       });
+      markCloudSyncedAutoSaved();
       showToast(
         'success',
-        `"${data.book.title}" registered in the BNHS Book Catalog.`
+        `"${data.book.title}" registered & Cloud Synced (Auto-Saved).`
       );
     } catch (err: any) {
       showToast('error', err.message);
@@ -1105,8 +1128,14 @@ function LibraryPortalContent() {
 
   const handleUpdateBook = async (
     bookId: number,
-    updated: Partial<BookItem>
+    updated: Partial<BookItem>,
+    silentAutoSave = false
   ) => {
+    isPushingCloudRef.current = true;
+    setIsCloudSyncing(true);
+    setBooks((prev) =>
+      prev.map((b) => (b.id === bookId ? { ...b, ...updated } : b))
+    );
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/books/${bookId}`, {
@@ -1116,10 +1145,26 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update book.');
-      await fetchOverview();
-      showToast('success', `Updated catalog record for "${data.book.title}".`);
+      if (data?.book) {
+        setBooks((prev) =>
+          prev.map((b) => (b.id === bookId ? { ...b, ...data.book } : b))
+        );
+      }
+      markCloudSyncedAutoSaved();
+      if (!silentAutoSave) {
+        await fetchOverview();
+        showToast(
+          'success',
+          `Updated & Cloud-Synced catalog record for "${data.book?.title || updated.title || 'Book'}".`
+        );
+      }
     } catch (err: any) {
-      showToast('error', err.message);
+      if (!silentAutoSave) {
+        showToast('error', err.message);
+      }
+    } finally {
+      isPushingCloudRef.current = false;
+      setIsCloudSyncing(false);
     }
   };
 
@@ -1137,6 +1182,7 @@ function LibraryPortalContent() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to delete book.');
       await fetchOverview();
+      markCloudSyncedAutoSaved();
       showToast('success', `Removed "${book.title}" from catalog inventory.`);
     } catch (err: any) {
       showToast('error', err.message);
@@ -1167,9 +1213,10 @@ function LibraryPortalContent() {
       if (!res.ok) throw new Error(data.error || 'Failed to issue book.');
       await fetchOverview();
       setBorrowModalBook(null);
+      markCloudSyncedAutoSaved();
       showToast(
         'success',
-        `Borrow transaction ${data.record.transactionCode} recorded for ${data.record.borrowerName}.`
+        `Borrow transaction ${data.record.transactionCode} recorded & Cloud Synced.`
       );
     } catch (err: any) {
       showToast('error', err.message);
@@ -1193,6 +1240,7 @@ function LibraryPortalContent() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to return book.');
       await fetchOverview();
+      markCloudSyncedAutoSaved();
       const bkTitle =
         bookById.get(record.bookId)?.title || `Book #${record.bookId}`;
       showToast(
@@ -1218,6 +1266,7 @@ function LibraryPortalContent() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to mark overdue.');
       await fetchOverview();
+      markCloudSyncedAutoSaved();
       showToast(
         'success',
         `Transaction ${record.transactionCode} flagged as Overdue.`
@@ -1376,9 +1425,11 @@ function LibraryPortalContent() {
 
   const handleUpdateDigitalResource = async (
     resourceId: number,
-    updated: Partial<DigitalResource>
+    updated: Partial<DigitalResource>,
+    silentAutoSave = false
   ) => {
     isPushingCloudRef.current = true;
+    setIsCloudSyncing(true);
     const prevItem = digitalResources.find((r) => r.id === resourceId);
     const mergedLocal: DigitalResource = {
       ...(prevItem || {
@@ -1402,6 +1453,7 @@ function LibraryPortalContent() {
     const optimisticList = digitalResources.map((r) =>
       r.id === resourceId ? mergedLocal : r
     );
+    skipNextAutoSyncRef.current = true;
     setDigitalResources(optimisticList);
     saveDigitalResourcesCache(optimisticList);
 
@@ -1419,6 +1471,7 @@ function LibraryPortalContent() {
           const syncedList = optimisticList.map((r) =>
             r.id === resourceId ? syncedItem : r
           );
+          skipNextAutoSyncRef.current = true;
           setDigitalResources(syncedList);
           saveDigitalResourcesCache(syncedList);
           try {
@@ -1427,20 +1480,28 @@ function LibraryPortalContent() {
             // ignore
           }
           await pushAutoCloudSync(portalSettings, syncedList, true);
-          void fetchOverview(true);
+          if (!silentAutoSave) {
+            void fetchOverview(true);
+          }
         }
       }
-      showToast(
-        'success',
-        `Updated & Cloud-Synced digital resource "${mergedLocal.title}".`
-      );
+      markCloudSyncedAutoSaved();
+      if (!silentAutoSave) {
+        showToast(
+          'success',
+          `Updated & Cloud-Synced digital resource "${mergedLocal.title}".`
+        );
+      }
     } catch {
-      showToast(
-        'success',
-        `Updated "${mergedLocal.title}" locally and queued for Cloud Sync.`
-      );
+      if (!silentAutoSave) {
+        showToast(
+          'success',
+          `Updated "${mergedLocal.title}" locally and queued for Cloud Sync.`
+        );
+      }
     } finally {
       isPushingCloudRef.current = false;
+      setIsCloudSyncing(false);
     }
   };
 
@@ -1538,7 +1599,8 @@ function LibraryPortalContent() {
       if (!res.ok) throw new Error(data.error || 'Failed to add category.');
       await fetchOverview();
       setCategoryForm({ name: '', code: '', shelfZone: '', description: '' });
-      showToast('success', `Category "${data.category.name}" added.`);
+      markCloudSyncedAutoSaved();
+      showToast('success', `Category "${data.category.name}" added & Cloud Synced.`);
     } catch (err: any) {
       showToast('error', err.message);
     }
@@ -1546,8 +1608,14 @@ function LibraryPortalContent() {
 
   const handleUpdateCategory = async (
     categoryId: number,
-    updated: Partial<BookCategory>
+    updated: Partial<BookCategory>,
+    silentAutoSave = false
   ) => {
+    isPushingCloudRef.current = true;
+    setIsCloudSyncing(true);
+    setCategories((prev) =>
+      prev.map((c) => (c.id === categoryId ? { ...c, ...updated } : c))
+    );
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/categories/${categoryId}`, {
@@ -1557,10 +1625,26 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update category.');
-      await fetchOverview();
-      showToast('success', `Updated shelf category "${data.category.name}".`);
+      if (data?.category) {
+        setCategories((prev) =>
+          prev.map((c) => (c.id === categoryId ? { ...c, ...data.category } : c))
+        );
+      }
+      markCloudSyncedAutoSaved();
+      if (!silentAutoSave) {
+        await fetchOverview();
+        showToast(
+          'success',
+          `Updated shelf category "${data.category?.name || updated.name || 'Category'}".`
+        );
+      }
     } catch (err: any) {
-      showToast('error', err.message);
+      if (!silentAutoSave) {
+        showToast('error', err.message);
+      }
+    } finally {
+      isPushingCloudRef.current = false;
+      setIsCloudSyncing(false);
     }
   };
 
@@ -1574,6 +1658,7 @@ function LibraryPortalContent() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to delete category.');
       await fetchOverview();
+      markCloudSyncedAutoSaved();
       showToast('success', `Deleted category "${cat.name}".`);
     } catch (err: any) {
       showToast('error', err.message);
@@ -1589,6 +1674,7 @@ function LibraryPortalContent() {
 
     // If an existing member (such as the Librarian) was loaded into the form, update their account directly
     if (memberForm.editingExistingId > 0) {
+      memberFormDirtyRef.current = false;
       await handleUpdateUser(memberForm.editingExistingId, {
         fullName: memberForm.fullName.trim(),
         email: memberForm.email.trim(),
@@ -1655,8 +1741,11 @@ function LibraryPortalContent() {
 
   const handleUpdateUser = async (
     userId: number,
-    updated: Partial<LibraryUser>
+    updated: Partial<LibraryUser>,
+    silentAutoSave = false
   ) => {
+    isPushingCloudRef.current = true;
+    setIsCloudSyncing(true);
     const prevUser = users.find((u) => u.id === userId);
     const nextName = (updated.fullName ?? prevUser?.fullName ?? '').trim();
     const updatedUserObj: LibraryUser = {
@@ -1746,16 +1835,23 @@ function LibraryPortalContent() {
             // ignore
           }
         }
-        void fetchOverview(true);
+        if (!silentAutoSave) {
+          void fetchOverview(true);
+        }
       }
+      markCloudSyncedAutoSaved();
     } catch {
       // Local state and localStorage cache already updated
+    } finally {
+      isPushingCloudRef.current = false;
+      setIsCloudSyncing(false);
     }
-    markCloudSyncedAutoSaved();
-    showToast(
-      'success',
-      `Updated account "${nextName}" (${updatedUserObj.role}).`
-    );
+    if (!silentAutoSave) {
+      showToast(
+        'success',
+        `Updated & Cloud-Synced account "${nextName}" (${updatedUserObj.role}).`
+      );
+    }
   };
 
   const handleDeleteUser = async (userItem: LibraryUser) => {
@@ -3559,6 +3655,7 @@ function LibraryPortalContent() {
                                     <button
                                       type="button"
                                       onClick={() => {
+                                        memberFormDirtyRef.current = false;
                                         setEditingUser(u);
                                         setMemberForm({
                                           editingExistingId: u.id,
@@ -3609,7 +3706,8 @@ function LibraryPortalContent() {
                       {memberForm.editingExistingId > 0 && (
                         <button
                           type="button"
-                          onClick={() =>
+                          onClick={() => {
+                            memberFormDirtyRef.current = false;
                             setMemberForm({
                               editingExistingId: 0,
                               fullName: '',
@@ -3617,8 +3715,8 @@ function LibraryPortalContent() {
                               role: 'Student',
                               idNumber: '',
                               gradeOrDepartment: '',
-                            })
-                          }
+                            });
+                          }}
                           className="text-[11px] font-semibold text-[#641526] underline hover:text-[#4d0f1d]"
                         >
                           New Member
@@ -3643,6 +3741,7 @@ function LibraryPortalContent() {
                                   (u) => u.role === 'Librarian'
                                 );
                                 if (libUser) {
+                                  memberFormDirtyRef.current = false;
                                   setMemberForm({
                                     editingExistingId: libUser.id,
                                     fullName: libUser.fullName,
@@ -3655,6 +3754,7 @@ function LibraryPortalContent() {
                                   return;
                                 }
                               }
+                              memberFormDirtyRef.current = true;
                               setMemberForm({
                                 ...memberForm,
                                 role: chosenRole,
@@ -3677,12 +3777,13 @@ function LibraryPortalContent() {
                             type="text"
                             required
                             value={memberForm.idNumber}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              memberFormDirtyRef.current = true;
                               setMemberForm({
                                 ...memberForm,
                                 idNumber: e.target.value,
-                              })
-                            }
+                              });
+                            }}
                             placeholder="LRN-132604..."
                             className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 font-mono"
                           />
@@ -3697,12 +3798,13 @@ function LibraryPortalContent() {
                           type="text"
                           required
                           value={memberForm.fullName}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            memberFormDirtyRef.current = true;
                             setMemberForm({
                               ...memberForm,
                               fullName: e.target.value,
-                            })
-                          }
+                            });
+                          }}
                           placeholder="e.g. Mrs. Marites R. Dela Cruz, RL"
                           className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 font-semibold"
                         />
@@ -3716,12 +3818,13 @@ function LibraryPortalContent() {
                           type="email"
                           required
                           value={memberForm.email}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            memberFormDirtyRef.current = true;
                             setMemberForm({
                               ...memberForm,
                               email: e.target.value,
-                            })
-                          }
+                            });
+                          }}
                           placeholder="m.delacruz@bnhs.edu.ph"
                           className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
                         />
@@ -3735,12 +3838,13 @@ function LibraryPortalContent() {
                           type="text"
                           required
                           value={memberForm.gradeOrDepartment}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            memberFormDirtyRef.current = true;
                             setMemberForm({
                               ...memberForm,
                               gradeOrDepartment: e.target.value,
-                            })
-                          }
+                            });
+                          }}
                           placeholder="e.g. Head School Librarian"
                           className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
                         />

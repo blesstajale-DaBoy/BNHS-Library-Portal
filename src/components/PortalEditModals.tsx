@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   X,
   Upload,
@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   Eye,
   FileText,
+  RefreshCw,
 } from 'lucide-react';
 import {
   BookItem,
@@ -51,9 +52,13 @@ export const AdminPortalSettingsModal: React.FC<
     url: string;
     title: string;
   } | null>(null);
+  const dirtyRef = useRef(false);
+  const latestFormRef = useRef<PortalSettings>(settings);
+  latestFormRef.current = form;
 
   useEffect(() => {
     if (isOpen) {
+      dirtyRef.current = false;
       setForm(settings);
       setHeroGoogleLink(
         settings.heroImageUrl.startsWith('http') ? settings.heroImageUrl : ''
@@ -61,20 +66,53 @@ export const AdminPortalSettingsModal: React.FC<
       setLogoGoogleLink(
         settings.logoImageUrl.startsWith('http') ? settings.logoImageUrl : ''
       );
-      setAutoSaveNote('');
+      setAutoSaveNote('Cloud Synced (Auto-Saved) — changes save automatically');
     }
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen || !dirtyRef.current) return;
+    setAutoSaveNote('Syncing changes to Cloud SQL...');
+    const timer = window.setTimeout(async () => {
+      try {
+        await onSave(latestFormRef.current, true);
+        dirtyRef.current = false;
+        setAutoSaveNote('Cloud Synced (Auto-Saved) — live in Preview & Published.');
+      } catch {
+        setAutoSaveNote('Saved locally (queued for Cloud Sync).');
+      }
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [form, isOpen]);
+
   if (!isOpen) return null;
+
+  const updateFormDirty = (updater: (prev: PortalSettings) => PortalSettings) => {
+    dirtyRef.current = true;
+    setForm(updater);
+  };
+
+  const handleCloseWithFlush = async () => {
+    if (dirtyRef.current) {
+      dirtyRef.current = false;
+      try {
+        await onSave(latestFormRef.current, true);
+      } catch {
+        // ignore
+      }
+    }
+    onClose();
+  };
 
   const triggerAutoCloudSave = async (
     nextSettings: PortalSettings,
     label: string
   ) => {
-    setAutoSaveNote(`Auto-saving ${label} to Cloud Sync...`);
+    dirtyRef.current = false;
+    setAutoSaveNote(`Syncing ${label} to Cloud SQL...`);
     try {
       await onSave(nextSettings, true);
-      setAutoSaveNote(`${label} saved automatically to Cloud Sync.`);
+      setAutoSaveNote(`Cloud Synced (Auto-Saved) — ${label} updated live.`);
     } catch {
       setAutoSaveNote(`${label} saved locally (queued for Cloud Sync).`);
     }
@@ -104,23 +142,28 @@ export const AdminPortalSettingsModal: React.FC<
   const handleApplyGoogleLink = (
     rawLink: string,
     field: 'heroImageUrl' | 'logoImageUrl',
-    autoSave = false
+    immediate = false
   ) => {
     const normalized = normalizeGoogleImageLink(rawLink);
     if (!normalized) return;
     const nextSettings: PortalSettings = { ...form, [field]: normalized };
-    setForm(nextSettings);
-    if (autoSave) {
+    if (immediate) {
+      dirtyRef.current = false;
+      setForm(nextSettings);
       void triggerAutoCloudSave(
         nextSettings,
         field === 'heroImageUrl' ? 'Hero Banner Link' : 'School Logo Link'
       );
+    } else {
+      dirtyRef.current = true;
+      setForm(nextSettings);
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    dirtyRef.current = false;
     try {
       const nextSettings: PortalSettings = {
         ...form,
@@ -149,7 +192,8 @@ export const AdminPortalSettingsModal: React.FC<
             </h3>
           </div>
           <button
-            onClick={onClose}
+            type="button"
+            onClick={handleCloseWithFlush}
             className="rounded-lg p-1 text-white/70 hover:text-white"
           >
             <X className="h-5 w-5" />
@@ -168,9 +212,10 @@ export const AdminPortalSettingsModal: React.FC<
               type="text"
               required
               value={form.scheduleBannerText}
-              onChange={(e) =>
-                setForm({ ...form, scheduleBannerText: e.target.value })
-              }
+              onChange={(e) => {
+                const val = e.target.value;
+                updateFormDirty((prev) => ({ ...prev, scheduleBannerText: val }));
+              }}
               placeholder="Academic Year 2026–2027 · Open Mon–Fri, 7:30 AM – 5:00 PM"
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 font-medium"
             />
@@ -184,9 +229,10 @@ export const AdminPortalSettingsModal: React.FC<
               type="text"
               required
               value={form.welcomeHeading}
-              onChange={(e) =>
-                setForm({ ...form, welcomeHeading: e.target.value })
-              }
+              onChange={(e) => {
+                const val = e.target.value;
+                updateFormDirty((prev) => ({ ...prev, welcomeHeading: val }));
+              }}
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
             />
           </div>
@@ -408,7 +454,11 @@ export const AdminPortalSettingsModal: React.FC<
 
           {autoSaveNote && (
             <div className="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 text-[11px] font-semibold text-emerald-800 flex items-center gap-1.5">
-              <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              {autoSaveNote.includes('Syncing') ? (
+                <RefreshCw className="h-3.5 w-3.5 text-emerald-600 animate-spin shrink-0" />
+              ) : (
+                <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              )}
               <span>{autoSaveNote}</span>
             </div>
           )}
@@ -416,10 +466,10 @@ export const AdminPortalSettingsModal: React.FC<
           <div className="flex items-center justify-end gap-2.5 pt-2">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleCloseWithFlush}
               className="rounded-lg border border-neutral-300 px-4 py-2 font-medium text-neutral-700 hover:bg-neutral-50"
             >
-              Cancel
+              Close
             </button>
             <button
               type="submit"
@@ -444,7 +494,11 @@ interface EditBookModalProps {
   book: BookItem | null;
   categories: BookCategory[];
   onClose: () => void;
-  onSave: (bookId: number, updated: Partial<BookItem>) => Promise<void>;
+  onSave: (
+    bookId: number,
+    updated: Partial<BookItem>,
+    silentAutoSave?: boolean
+  ) => Promise<void>;
 }
 
 export const EditBookModal: React.FC<EditBookModalProps> = ({
@@ -468,9 +522,14 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
     coverKey: 'history',
   });
   const [saving, setSaving] = useState(false);
+  const [autoSaveStatus, setAutoSaveStatus] = useState('');
+  const dirtyRef = useRef(false);
+  const latestFormRef = useRef(form);
+  latestFormRef.current = form;
 
   useEffect(() => {
     if (book) {
+      dirtyRef.current = false;
       setForm({
         title: book.title,
         author: book.author,
@@ -485,10 +544,44 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
         description: book.description,
         coverKey: book.coverKey || 'history',
       });
+      setAutoSaveStatus('Cloud Synced (Auto-Saved) — edits save automatically');
     }
   }, [book?.id]);
 
+  useEffect(() => {
+    if (!book || !dirtyRef.current) return;
+    if (!form.title.trim()) return;
+    setAutoSaveStatus('Syncing changes to Cloud SQL...');
+    const timer = window.setTimeout(async () => {
+      try {
+        await onSave(book.id, latestFormRef.current, true);
+        dirtyRef.current = false;
+        setAutoSaveStatus('Cloud Synced (Auto-Saved) — live in Preview & Published.');
+      } catch {
+        setAutoSaveStatus('Saved locally (queued for Cloud Sync).');
+      }
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [form, book?.id]);
+
   if (!book) return null;
+
+  const setBookField = (patch: Partial<typeof form>) => {
+    dirtyRef.current = true;
+    setForm((prev) => ({ ...prev, ...patch }));
+  };
+
+  const handleCloseWithFlush = async () => {
+    if (dirtyRef.current && latestFormRef.current.title.trim()) {
+      dirtyRef.current = false;
+      try {
+        await onSave(book.id, latestFormRef.current, true);
+      } catch {
+        // ignore
+      }
+    }
+    onClose();
+  };
 
   const handleBookCoverUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -498,8 +591,12 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
       if (typeof reader.result === 'string') {
         const nextCover = reader.result as string;
         const nextForm = { ...form, coverKey: nextCover };
+        dirtyRef.current = false;
         setForm(nextForm);
-        void onSave(book.id, nextForm);
+        setAutoSaveStatus('Syncing cover image to Cloud SQL...');
+        void onSave(book.id, nextForm, true).then(() => {
+          setAutoSaveStatus('Cloud Synced (Auto-Saved) — cover image updated.');
+        });
       }
     };
     reader.readAsDataURL(file);
@@ -508,8 +605,9 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    dirtyRef.current = false;
     try {
-      await onSave(book.id, form);
+      await onSave(book.id, form, false);
       onClose();
     } finally {
       setSaving(false);
@@ -524,7 +622,8 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
             Edit Catalog Book Record
           </h3>
           <button
-            onClick={onClose}
+            type="button"
+            onClick={handleCloseWithFlush}
             className="rounded-lg p-1 text-white/70 hover:text-white"
           >
             <X className="h-5 w-5" />
@@ -541,7 +640,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
                 type="text"
                 required
                 value={form.title}
-                onChange={(e) => setForm({ ...form, title: e.target.value })}
+                onChange={(e) => setBookField({ title: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
               />
             </div>
@@ -553,7 +652,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
                 type="text"
                 required
                 value={form.author}
-                onChange={(e) => setForm({ ...form, author: e.target.value })}
+                onChange={(e) => setBookField({ author: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
               />
             </div>
@@ -568,7 +667,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
                 type="text"
                 required
                 value={form.isbn}
-                onChange={(e) => setForm({ ...form, isbn: e.target.value })}
+                onChange={(e) => setBookField({ isbn: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-neutral-900"
               />
             </div>
@@ -580,7 +679,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
                 type="text"
                 required
                 value={form.subject}
-                onChange={(e) => setForm({ ...form, subject: e.target.value })}
+                onChange={(e) => setBookField({ subject: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
               />
             </div>
@@ -590,7 +689,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
               </label>
               <select
                 value={form.category}
-                onChange={(e) => setForm({ ...form, category: e.target.value })}
+                onChange={(e) => setBookField({ category: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
               >
                 {categories.map((c) => (
@@ -611,9 +710,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
                 type="text"
                 required
                 value={form.publisher}
-                onChange={(e) =>
-                  setForm({ ...form, publisher: e.target.value })
-                }
+                onChange={(e) => setBookField({ publisher: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
               />
             </div>
@@ -626,7 +723,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
                 required
                 value={form.shelfLocation}
                 onChange={(e) =>
-                  setForm({ ...form, shelfLocation: e.target.value })
+                  setBookField({ shelfLocation: e.target.value })
                 }
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
               />
@@ -641,7 +738,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
                 required
                 value={form.totalCopies}
                 onChange={(e) =>
-                  setForm({ ...form, totalCopies: Number(e.target.value) })
+                  setBookField({ totalCopies: Number(e.target.value) })
                 }
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-neutral-900"
               />
@@ -656,8 +753,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
                 required
                 value={form.availableCopies}
                 onChange={(e) =>
-                  setForm({
-                    ...form,
+                  setBookField({
                     availableCopies: Number(e.target.value),
                   })
                 }
@@ -674,9 +770,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
               rows={3}
               required
               value={form.description}
-              onChange={(e) =>
-                setForm({ ...form, description: e.target.value })
-              }
+              onChange={(e) => setBookField({ description: e.target.value })}
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
             />
           </div>
@@ -717,13 +811,24 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({
             </label>
           </div>
 
+          {autoSaveStatus && (
+            <div className="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-[11px] font-semibold text-emerald-800 flex items-center gap-1.5">
+              {autoSaveStatus.includes('Syncing') ? (
+                <RefreshCw className="h-3.5 w-3.5 text-emerald-600 animate-spin shrink-0" />
+              ) : (
+                <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              )}
+              <span>{autoSaveStatus}</span>
+            </div>
+          )}
+
           <div className="flex items-center justify-end gap-2.5 pt-2">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleCloseWithFlush}
               className="rounded-lg border border-neutral-300 px-4 py-2 font-medium text-neutral-700 hover:bg-neutral-50"
             >
-              Cancel
+              Close
             </button>
             <button
               type="submit"
@@ -744,7 +849,8 @@ interface EditDigitalResourceModalProps {
   onClose: () => void;
   onSave: (
     resourceId: number,
-    updated: Partial<DigitalResource>
+    updated: Partial<DigitalResource>,
+    silentAutoSave?: boolean
   ) => Promise<void>;
 }
 
@@ -767,9 +873,14 @@ export const EditDigitalResourceModal: React.FC<
   const [attachedFileName, setAttachedFileName] = useState('');
   const [fileError, setFileError] = useState('');
   const [showInlinePreview, setShowInlinePreview] = useState(false);
+  const [autoSaveStatus, setAutoSaveStatus] = useState('');
+  const dirtyRef = useRef(false);
+  const latestFormRef = useRef(form);
+  latestFormRef.current = form;
 
   useEffect(() => {
     if (resource) {
+      dirtyRef.current = false;
       setForm({
         title: resource.title,
         author: resource.author,
@@ -785,15 +896,50 @@ export const EditDigitalResourceModal: React.FC<
       setAttachedFileName('');
       setFileError('');
       setShowInlinePreview(false);
+      setAutoSaveStatus('Cloud Synced (Auto-Saved) — edits & files save automatically');
     }
   }, [resource?.id]);
 
+  useEffect(() => {
+    if (!resource || !dirtyRef.current) return;
+    if (!form.title.trim()) return;
+    setAutoSaveStatus('Syncing resource changes to Cloud SQL...');
+    const timer = window.setTimeout(async () => {
+      try {
+        await onSave(resource.id, latestFormRef.current, true);
+        dirtyRef.current = false;
+        setAutoSaveStatus('Cloud Synced (Auto-Saved) — live in Preview & Published.');
+      } catch {
+        setAutoSaveStatus('Saved locally (queued for Cloud Sync).');
+      }
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [form, resource?.id]);
+
   if (!resource) return null;
+
+  const setResourceField = (patch: Partial<typeof form>) => {
+    dirtyRef.current = true;
+    setForm((prev) => ({ ...prev, ...patch }));
+  };
+
+  const handleCloseWithFlush = async () => {
+    if (dirtyRef.current && latestFormRef.current.title.trim()) {
+      dirtyRef.current = false;
+      try {
+        await onSave(resource.id, latestFormRef.current, true);
+      } catch {
+        // ignore
+      }
+    }
+    onClose();
+  };
 
   const handleFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setFileError('');
+    setAutoSaveStatus('Uploading & syncing file to Cloud SQL...');
     try {
       const parsed = await readFileAsResourcePayload(file);
       const nextForm = {
@@ -806,10 +952,12 @@ export const EditDigitalResourceModal: React.FC<
           form.contentPreview ||
           `Uploaded file: ${parsed.fileName} (${parsed.fileSizeLabel})`,
       };
+      dirtyRef.current = false;
       setForm(nextForm);
       setAttachedFileName(parsed.fileName);
       setShowInlinePreview(true);
-      await onSave(resource.id, nextForm);
+      await onSave(resource.id, nextForm, true);
+      setAutoSaveStatus('Cloud Synced (Auto-Saved) — uploaded file saved live.');
     } catch (err: any) {
       setFileError(err?.message || 'Failed to read uploaded file.');
     }
@@ -818,8 +966,9 @@ export const EditDigitalResourceModal: React.FC<
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    dirtyRef.current = false;
     try {
-      await onSave(resource.id, form);
+      await onSave(resource.id, form, false);
       onClose();
     } finally {
       setSaving(false);
@@ -835,7 +984,7 @@ export const EditDigitalResourceModal: React.FC<
           </h3>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleCloseWithFlush}
             className="rounded-lg p-1 text-white/70 hover:text-white"
           >
             <X className="h-5 w-5" />
@@ -903,7 +1052,7 @@ export const EditDigitalResourceModal: React.FC<
                 }
                 onChange={(e) => {
                   if (!e.target.value.startsWith('[Uploaded File Saved')) {
-                    setForm({ ...form, externalUrl: e.target.value });
+                    setResourceField({ externalUrl: e.target.value });
                   }
                 }}
                 placeholder="https://drive.google.com/file/d/... or direct file URL"
@@ -933,7 +1082,7 @@ export const EditDigitalResourceModal: React.FC<
               type="text"
               required
               value={form.title}
-              onChange={(e) => setForm({ ...form, title: e.target.value })}
+              onChange={(e) => setResourceField({ title: e.target.value })}
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
             />
           </div>
@@ -947,7 +1096,7 @@ export const EditDigitalResourceModal: React.FC<
                 type="text"
                 required
                 value={form.author}
-                onChange={(e) => setForm({ ...form, author: e.target.value })}
+                onChange={(e) => setResourceField({ author: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
               />
             </div>
@@ -958,8 +1107,7 @@ export const EditDigitalResourceModal: React.FC<
               <select
                 value={form.resourceType}
                 onChange={(e) =>
-                  setForm({
-                    ...form,
+                  setResourceField({
                     resourceType: e.target
                       .value as DigitalResource['resourceType'],
                   })
@@ -984,7 +1132,7 @@ export const EditDigitalResourceModal: React.FC<
                 required
                 value={form.gradeLevel}
                 onChange={(e) =>
-                  setForm({ ...form, gradeLevel: e.target.value })
+                  setResourceField({ gradeLevel: e.target.value })
                 }
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
               />
@@ -1000,7 +1148,7 @@ export const EditDigitalResourceModal: React.FC<
                 type="text"
                 required
                 value={form.subject}
-                onChange={(e) => setForm({ ...form, subject: e.target.value })}
+                onChange={(e) => setResourceField({ subject: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
               />
             </div>
@@ -1012,7 +1160,7 @@ export const EditDigitalResourceModal: React.FC<
                 type="text"
                 required
                 value={form.fileSize}
-                onChange={(e) => setForm({ ...form, fileSize: e.target.value })}
+                onChange={(e) => setResourceField({ fileSize: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-neutral-900"
               />
             </div>
@@ -1026,7 +1174,7 @@ export const EditDigitalResourceModal: React.FC<
                 required
                 value={form.pageCount}
                 onChange={(e) =>
-                  setForm({ ...form, pageCount: Number(e.target.value) })
+                  setResourceField({ pageCount: Number(e.target.value) })
                 }
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-neutral-900"
               />
@@ -1041,7 +1189,7 @@ export const EditDigitalResourceModal: React.FC<
               rows={2}
               required
               value={form.summary}
-              onChange={(e) => setForm({ ...form, summary: e.target.value })}
+              onChange={(e) => setResourceField({ summary: e.target.value })}
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
             />
           </div>
@@ -1054,19 +1202,31 @@ export const EditDigitalResourceModal: React.FC<
               rows={4}
               value={form.contentPreview}
               onChange={(e) =>
-                setForm({ ...form, contentPreview: e.target.value })
+                setResourceField({ contentPreview: e.target.value })
               }
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
             />
           </div>
 
+          {autoSaveStatus && (
+            <div className="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-[11px] font-semibold text-emerald-800 flex items-center gap-1.5">
+              {autoSaveStatus.includes('Syncing') ||
+              autoSaveStatus.includes('Uploading') ? (
+                <RefreshCw className="h-3.5 w-3.5 text-emerald-600 animate-spin shrink-0" />
+              ) : (
+                <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              )}
+              <span>{autoSaveStatus}</span>
+            </div>
+          )}
+
           <div className="flex items-center justify-end gap-2.5 pt-2">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleCloseWithFlush}
               className="rounded-lg border border-neutral-300 px-4 py-2 font-medium text-neutral-700 hover:bg-neutral-50"
             >
-              Cancel
+              Close
             </button>
             <button
               type="submit"
@@ -1086,7 +1246,11 @@ interface EditUserModalProps {
   user: LibraryUser | null;
   allUsers?: LibraryUser[];
   onClose: () => void;
-  onSave: (userId: number, updated: Partial<LibraryUser>) => Promise<void>;
+  onSave: (
+    userId: number,
+    updated: Partial<LibraryUser>,
+    silentAutoSave?: boolean
+  ) => Promise<void>;
 }
 
 export const EditUserModal: React.FC<EditUserModalProps> = ({
@@ -1104,9 +1268,14 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
     status: 'Active',
   });
   const [saving, setSaving] = useState(false);
+  const [autoSaveStatus, setAutoSaveStatus] = useState('');
+  const dirtyRef = useRef(false);
+  const latestFormRef = useRef(form);
+  latestFormRef.current = form;
 
   useEffect(() => {
     if (user) {
+      dirtyRef.current = false;
       setForm({
         fullName: user.fullName || '',
         email: user.email || '',
@@ -1115,12 +1284,69 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
         gradeOrDepartment: user.gradeOrDepartment || '',
         status: user.status || 'Active',
       });
+      setAutoSaveStatus('Cloud Synced (Auto-Saved) — edits save automatically');
     }
   }, [user?.id]);
 
+  useEffect(() => {
+    if (!user || !dirtyRef.current) return;
+    if (!form.fullName.trim()) return;
+    setAutoSaveStatus('Syncing account edits to Cloud SQL...');
+    const timer = window.setTimeout(async () => {
+      const f = latestFormRef.current;
+      try {
+        await onSave(
+          user.id,
+          {
+            ...f,
+            fullName: f.fullName.trim(),
+            email: f.email.trim(),
+            idNumber: f.idNumber.trim(),
+            gradeOrDepartment: f.gradeOrDepartment.trim(),
+          },
+          true
+        );
+        dirtyRef.current = false;
+        setAutoSaveStatus('Cloud Synced (Auto-Saved) — live in Preview & Published.');
+      } catch {
+        setAutoSaveStatus('Saved locally (queued for Cloud Sync).');
+      }
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [form, user?.id]);
+
   if (!user) return null;
 
+  const setUserField = (patch: Partial<typeof form>) => {
+    dirtyRef.current = true;
+    setForm((prev) => ({ ...prev, ...patch }));
+  };
+
+  const handleCloseWithFlush = async () => {
+    const f = latestFormRef.current;
+    if (dirtyRef.current && f.fullName.trim()) {
+      dirtyRef.current = false;
+      try {
+        await onSave(
+          user.id,
+          {
+            ...f,
+            fullName: f.fullName.trim(),
+            email: f.email.trim(),
+            idNumber: f.idNumber.trim(),
+            gradeOrDepartment: f.gradeOrDepartment.trim(),
+          },
+          true
+        );
+      } catch {
+        // ignore
+      }
+    }
+    onClose();
+  };
+
   const handleRoleChangeInModal = (nextRole: LibraryUser['role']) => {
+    dirtyRef.current = true;
     const matchedRoleUser =
       allUsers.find((u) => u.role === nextRole && u.id !== user.id) ||
       allUsers.find((u) => u.role === nextRole) ||
@@ -1152,14 +1378,19 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
     e.preventDefault();
     if (!form.fullName.trim()) return;
     setSaving(true);
+    dirtyRef.current = false;
     try {
-      await onSave(user.id, {
-        ...form,
-        fullName: form.fullName.trim(),
-        email: form.email.trim(),
-        idNumber: form.idNumber.trim(),
-        gradeOrDepartment: form.gradeOrDepartment.trim(),
-      });
+      await onSave(
+        user.id,
+        {
+          ...form,
+          fullName: form.fullName.trim(),
+          email: form.email.trim(),
+          idNumber: form.idNumber.trim(),
+          gradeOrDepartment: form.gradeOrDepartment.trim(),
+        },
+        false
+      );
       onClose();
     } finally {
       setSaving(false);
@@ -1175,7 +1406,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
           </h3>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleCloseWithFlush}
             className="rounded-lg p-1 text-white/70 hover:text-white"
           >
             <X className="h-5 w-5" />
@@ -1192,7 +1423,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
               required
               autoFocus
               value={form.fullName}
-              onChange={(e) => setForm({ ...form, fullName: e.target.value })}
+              onChange={(e) => setUserField({ fullName: e.target.value })}
               placeholder="Enter full name..."
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 font-semibold focus:border-[#641526] focus:outline-none"
             />
@@ -1205,7 +1436,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
               type="email"
               required
               value={form.email}
-              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              onChange={(e) => setUserField({ email: e.target.value })}
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 focus:border-[#641526] focus:outline-none"
             />
           </div>
@@ -1237,7 +1468,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                 type="text"
                 required
                 value={form.idNumber}
-                onChange={(e) => setForm({ ...form, idNumber: e.target.value })}
+                onChange={(e) => setUserField({ idNumber: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-neutral-900 focus:border-[#641526] focus:outline-none"
               />
             </div>
@@ -1251,19 +1482,30 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
               required
               value={form.gradeOrDepartment}
               onChange={(e) =>
-                setForm({ ...form, gradeOrDepartment: e.target.value })
+                setUserField({ gradeOrDepartment: e.target.value })
               }
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 focus:border-[#641526] focus:outline-none"
             />
           </div>
 
+          {autoSaveStatus && (
+            <div className="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-[11px] font-semibold text-emerald-800 flex items-center gap-1.5">
+              {autoSaveStatus.includes('Syncing') ? (
+                <RefreshCw className="h-3.5 w-3.5 text-emerald-600 animate-spin shrink-0" />
+              ) : (
+                <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              )}
+              <span>{autoSaveStatus}</span>
+            </div>
+          )}
+
           <div className="flex items-center justify-end gap-2.5 pt-2">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleCloseWithFlush}
               className="rounded-lg border border-neutral-300 px-4 py-2 font-medium text-neutral-700 hover:bg-neutral-50"
             >
-              Cancel
+              Close
             </button>
             <button
               type="submit"
@@ -1284,7 +1526,8 @@ interface EditCategoryModalProps {
   onClose: () => void;
   onSave: (
     categoryId: number,
-    updated: Partial<BookCategory>
+    updated: Partial<BookCategory>,
+    silentAutoSave?: boolean
   ) => Promise<void>;
 }
 
@@ -1300,25 +1543,65 @@ export const EditCategoryModal: React.FC<EditCategoryModalProps> = ({
     description: '',
   });
   const [saving, setSaving] = useState(false);
+  const [autoSaveStatus, setAutoSaveStatus] = useState('');
+  const dirtyRef = useRef(false);
+  const latestFormRef = useRef(form);
+  latestFormRef.current = form;
 
   useEffect(() => {
     if (category) {
+      dirtyRef.current = false;
       setForm({
         name: category.name,
         code: category.code,
         shelfZone: category.shelfZone,
         description: category.description,
       });
+      setAutoSaveStatus('Cloud Synced (Auto-Saved) — edits save automatically');
     }
   }, [category?.id]);
 
+  useEffect(() => {
+    if (!category || !dirtyRef.current) return;
+    if (!form.name.trim()) return;
+    setAutoSaveStatus('Syncing category changes to Cloud SQL...');
+    const timer = window.setTimeout(async () => {
+      try {
+        await onSave(category.id, latestFormRef.current, true);
+        dirtyRef.current = false;
+        setAutoSaveStatus('Cloud Synced (Auto-Saved) — live in Preview & Published.');
+      } catch {
+        setAutoSaveStatus('Saved locally (queued for Cloud Sync).');
+      }
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [form, category?.id]);
+
   if (!category) return null;
+
+  const setCatField = (patch: Partial<typeof form>) => {
+    dirtyRef.current = true;
+    setForm((prev) => ({ ...prev, ...patch }));
+  };
+
+  const handleCloseWithFlush = async () => {
+    if (dirtyRef.current && latestFormRef.current.name.trim()) {
+      dirtyRef.current = false;
+      try {
+        await onSave(category.id, latestFormRef.current, true);
+      } catch {
+        // ignore
+      }
+    }
+    onClose();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    dirtyRef.current = false;
     try {
-      await onSave(category.id, form);
+      await onSave(category.id, form, false);
       onClose();
     } finally {
       setSaving(false);
@@ -1333,7 +1616,8 @@ export const EditCategoryModal: React.FC<EditCategoryModalProps> = ({
             Edit Shelf Category
           </h3>
           <button
-            onClick={onClose}
+            type="button"
+            onClick={handleCloseWithFlush}
             className="rounded-lg p-1 text-white/70 hover:text-white"
           >
             <X className="h-5 w-5" />
@@ -1349,7 +1633,7 @@ export const EditCategoryModal: React.FC<EditCategoryModalProps> = ({
               type="text"
               required
               value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              onChange={(e) => setCatField({ name: e.target.value })}
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
             />
           </div>
@@ -1362,7 +1646,7 @@ export const EditCategoryModal: React.FC<EditCategoryModalProps> = ({
                 type="text"
                 required
                 value={form.code}
-                onChange={(e) => setForm({ ...form, code: e.target.value })}
+                onChange={(e) => setCatField({ code: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-neutral-900"
               />
             </div>
@@ -1374,9 +1658,7 @@ export const EditCategoryModal: React.FC<EditCategoryModalProps> = ({
                 type="text"
                 required
                 value={form.shelfZone}
-                onChange={(e) =>
-                  setForm({ ...form, shelfZone: e.target.value })
-                }
+                onChange={(e) => setCatField({ shelfZone: e.target.value })}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
               />
             </div>
@@ -1389,20 +1671,29 @@ export const EditCategoryModal: React.FC<EditCategoryModalProps> = ({
               rows={3}
               required
               value={form.description}
-              onChange={(e) =>
-                setForm({ ...form, description: e.target.value })
-              }
+              onChange={(e) => setCatField({ description: e.target.value })}
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
             />
           </div>
 
+          {autoSaveStatus && (
+            <div className="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-[11px] font-semibold text-emerald-800 flex items-center gap-1.5">
+              {autoSaveStatus.includes('Syncing') ? (
+                <RefreshCw className="h-3.5 w-3.5 text-emerald-600 animate-spin shrink-0" />
+              ) : (
+                <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              )}
+              <span>{autoSaveStatus}</span>
+            </div>
+          )}
+
           <div className="flex items-center justify-end gap-2.5 pt-2">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleCloseWithFlush}
               className="rounded-lg border border-neutral-300 px-4 py-2 font-medium text-neutral-700 hover:bg-neutral-50"
             >
-              Cancel
+              Close
             </button>
             <button
               type="submit"
