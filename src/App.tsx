@@ -533,6 +533,7 @@ function LibraryPortalContent() {
   const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
   const isPushingCloudRef = useRef(false);
   const hasHydratedInitialRef = useRef(false);
+  const skipNextAutoSyncRef = useRef(false);
 
   const markCloudSyncedAutoSaved = () => {
     const nowTime = new Date().toLocaleTimeString([], {
@@ -567,6 +568,7 @@ function LibraryPortalContent() {
       }
       const data = await res.json();
       if (silent && isPushingCloudRef.current) return;
+      skipNextAutoSyncRef.current = true;
       if (Array.isArray(data.books) && data.books.length > 0) {
         setBooks(data.books);
       }
@@ -600,6 +602,8 @@ function LibraryPortalContent() {
           ),
         };
         setPortalSettings(resolvedSettings);
+        setHeroImgFailed(false);
+        setCrestImgFailed(false);
         try {
           localStorage.setItem(
             'bnhs_portal_settings_cache',
@@ -696,9 +700,13 @@ function LibraryPortalContent() {
     }
   }, [digitalForm]);
 
-  // Automatic debounced Cloud Sync whenever portalSettings, digitalResources, or waitlistRequests change
+  // Automatic debounced Cloud Sync whenever user edits portalSettings, digitalResources, or waitlistRequests
   useEffect(() => {
     if (!hasHydratedInitialRef.current) return;
+    if (skipNextAutoSyncRef.current) {
+      skipNextAutoSyncRef.current = false;
+      return;
+    }
     const timer = window.setTimeout(() => {
       void pushAutoCloudSync(portalSettings, digitalResources, true);
     }, 800);
@@ -976,7 +984,7 @@ function LibraryPortalContent() {
       if (res.ok) {
         const data = await res.json();
         if (data.portalSettings) {
-          setPortalSettings({
+          const syncedSettings: PortalSettings = {
             ...data.portalSettings,
             heroImageUrl: resolvePortalAssetUrl(
               data.portalSettings.heroImageUrl,
@@ -986,7 +994,17 @@ function LibraryPortalContent() {
               data.portalSettings.logoImageUrl,
               DEFAULT_CREST_ANIMATED_GIF_PATH
             ),
-          });
+          };
+          skipNextAutoSyncRef.current = true;
+          setPortalSettings(syncedSettings);
+          try {
+            localStorage.setItem(
+              'bnhs_portal_settings_cache',
+              JSON.stringify(syncedSettings)
+            );
+          } catch {
+            // ignore
+          }
         }
       }
       markCloudSyncedAutoSaved();
@@ -5010,10 +5028,62 @@ function LibraryPortalContent() {
   );
 }
 
+class PortalErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; errorMessage: string }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, errorMessage: '' };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return {
+      hasError: true,
+      errorMessage: error?.message || 'Unexpected portal render error',
+    };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-[#641526] text-white flex items-center justify-center p-6">
+          <div className="max-w-md w-full rounded-xl bg-white text-[#1E1B18] border-2 border-[#D4AF37] p-6 shadow-2xl space-y-4 text-center">
+            <h1 className="font-display text-lg font-bold text-[#641526]">
+              BNHS Library Portal Recovery
+            </h1>
+            <p className="text-xs text-neutral-600">
+              {this.state.errorMessage}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  localStorage.removeItem('bnhs_portal_settings_cache');
+                  localStorage.removeItem('bnhs_digital_upload_draft_v1');
+                } catch {
+                  // ignore
+                }
+                window.location.reload();
+              }}
+              className="rounded-lg bg-[#641526] px-4 py-2 text-xs font-semibold text-white hover:bg-[#4d0f1d]"
+            >
+              Clear Local Cache & Reload Portal
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   return (
-    <AuthProvider>
-      <LibraryPortalContent />
-    </AuthProvider>
+    <PortalErrorBoundary>
+      <AuthProvider>
+        <LibraryPortalContent />
+      </AuthProvider>
+    </PortalErrorBoundary>
   );
 }

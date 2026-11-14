@@ -59,7 +59,7 @@ export default defineConfig(() => {
     plugins: [silenceViteHmrWebsocketErrorPlugin(), react(), tailwindcss()],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
     server: {

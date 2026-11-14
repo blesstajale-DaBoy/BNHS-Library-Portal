@@ -1,9 +1,8 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 import * as dotenv from 'dotenv';
-import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
+import { requireAuth, type AuthRequest } from './src/middleware/auth.ts';
 import {
   getOrCreateUser,
   getLibraryOverviewData,
@@ -574,6 +573,50 @@ function buildFallbackOverview() {
   };
 }
 
+function computeShortHash(input: string): string {
+  let h = 2166136261;
+  const step = Math.max(1, Math.floor(input.length / 256));
+  for (let i = 0; i < input.length; i += step) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `${input.length}-${(h >>> 0).toString(36)}`;
+}
+
+function sanitizePortalSettingsForOverview(settings: typeof fallbackPortalSettings) {
+  return {
+    ...settings,
+    heroImageUrl:
+      settings.heroImageUrl && settings.heroImageUrl.startsWith('data:')
+        ? `/api/portal-assets/hero?v=${computeShortHash(settings.heroImageUrl)}`
+        : settings.heroImageUrl,
+    logoImageUrl:
+      settings.logoImageUrl && settings.logoImageUrl.startsWith('data:')
+        ? `/api/portal-assets/logo?v=${computeShortHash(settings.logoImageUrl)}`
+        : settings.logoImageUrl,
+  };
+}
+
+function mergePortalSettingsWithPreservedAssets(
+  incoming: Record<string, any> | undefined,
+  existing: typeof fallbackPortalSettings
+) {
+  const next = { ...existing, ...(incoming || {}) };
+  if (
+    typeof incoming?.heroImageUrl === 'string' &&
+    incoming.heroImageUrl.startsWith('/api/portal-assets/hero')
+  ) {
+    next.heroImageUrl = existing.heroImageUrl;
+  }
+  if (
+    typeof incoming?.logoImageUrl === 'string' &&
+    incoming.logoImageUrl.startsWith('/api/portal-assets/logo')
+  ) {
+    next.logoImageUrl = existing.logoImageUrl;
+  }
+  return next;
+}
+
 async function safeGetOverviewPayload() {
   try {
     const [data, portalSettings, waitlistRequests] = await Promise.all([
@@ -600,14 +643,14 @@ async function safeGetOverviewPayload() {
     }
     return {
       ...data,
-      portalSettings,
+      portalSettings: sanitizePortalSettingsForOverview(portalSettings),
       waitlistRequests,
       syncedAt: new Date().toISOString(),
     };
   } catch (_err) {
     return {
       ...buildFallbackOverview(),
-      portalSettings: fallbackPortalSettings,
+      portalSettings: sanitizePortalSettingsForOverview(fallbackPortalSettings),
       waitlistRequests: fallbackWaitlistRequests,
       syncedAt: new Date().toISOString(),
     };
@@ -616,13 +659,58 @@ async function safeGetOverviewPayload() {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json({ limit: '50mb' }));
 
-  // Serve images & animated GIFs from both /src/assets and /assets in all environments (dev + published live)
-  app.use('/src/assets', express.static(path.join(__dirname, 'src/assets')));
+  // Serve static images & animated GIFs from /assets (public/assets) without intercepting Vite /src/assets module imports
   app.use('/assets', express.static(path.join(__dirname, 'public/assets')));
+
+  // Stream stored portal images/GIFs directly as binary so /api/library/overview stays fast (< 20 KB)
+  app.get('/api/portal-assets/:slot', async (req, res) => {
+    const slot = req.params.slot;
+    if (slot !== 'hero' && slot !== 'logo') {
+      res.status(404).end();
+      return;
+    }
+    try {
+      const settings = await getPortalSyncStateRecord(
+        'portal_settings',
+        fallbackPortalSettings
+      );
+      fallbackPortalSettings = settings;
+    } catch {
+      // use fallback memory
+    }
+
+    const rawUrl =
+      slot === 'hero'
+        ? fallbackPortalSettings.heroImageUrl
+        : fallbackPortalSettings.logoImageUrl;
+
+    if (rawUrl && rawUrl.startsWith('data:')) {
+      const commaIdx = rawUrl.indexOf(',');
+      if (commaIdx !== -1) {
+        const header = rawUrl.slice(5, commaIdx);
+        const body = rawUrl.slice(commaIdx + 1);
+        const mimeType = header.split(';')[0] || 'application/octet-stream';
+        const isBase64 = header.includes(';base64');
+        const buf = isBase64
+          ? Buffer.from(body, 'base64')
+          : Buffer.from(decodeURIComponent(body), 'utf8');
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        res.send(buf);
+        return;
+      }
+    }
+
+    const defaultRelative =
+      slot === 'hero'
+        ? 'public/assets/images/bnhs_library_hero_1794464935499.jpg'
+        : 'public/assets/images/bnhs_1978_official_logo_animated.gif';
+    res.sendFile(path.join(__dirname, defaultRelative));
+  });
 
   app.get('/api/library/overview', async (_req, res) => {
     const payload = await safeGetOverviewPayload();
@@ -631,10 +719,10 @@ async function startServer() {
 
   // Update Portal Settings (Hero Image, Logo, Schedule Text, Title) — Auto-saved to Cloud SQL + memory
   app.put('/api/portal-settings', requireAuth, async (req: AuthRequest, res) => {
-    fallbackPortalSettings = {
-      ...fallbackPortalSettings,
-      ...req.body,
-    };
+    fallbackPortalSettings = mergePortalSettingsWithPreservedAssets(
+      req.body,
+      fallbackPortalSettings
+    );
     try {
       await upsertPortalSyncStateRecord(
         'portal_settings',
@@ -644,7 +732,7 @@ async function startServer() {
       // Fallback memory updated
     }
     res.json({
-      portalSettings: fallbackPortalSettings,
+      portalSettings: sanitizePortalSettingsForOverview(fallbackPortalSettings),
       syncedAt: new Date().toISOString(),
     });
   });
@@ -680,10 +768,10 @@ async function startServer() {
   // Explicit Cloud Sync endpoint for manual or background auto-sync (saves all portal files & resource inputs)
   app.post('/api/cloud-sync', async (req, res) => {
     if (req.body?.portalSettings) {
-      fallbackPortalSettings = {
-        ...fallbackPortalSettings,
-        ...req.body.portalSettings,
-      };
+      fallbackPortalSettings = mergePortalSettingsWithPreservedAssets(
+        req.body.portalSettings,
+        fallbackPortalSettings
+      );
       try {
         await upsertPortalSyncStateRecord(
           'portal_settings',
@@ -718,8 +806,11 @@ async function startServer() {
         // Fallback memory updated
       }
     }
-    const payload = await safeGetOverviewPayload();
-    res.json(payload);
+    res.json({
+      ok: true,
+      portalSettings: sanitizePortalSettingsForOverview(fallbackPortalSettings),
+      syncedAt: new Date().toISOString(),
+    });
   });
 
   app.post('/api/auth/sync', requireAuth, async (req: AuthRequest, res) => {
@@ -1133,6 +1224,7 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== 'production') {
     process.env.DISABLE_HMR = 'true';
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false, watch: null },
       appType: 'spa',
