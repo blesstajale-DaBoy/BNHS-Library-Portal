@@ -1,0 +1,201 @@
+{
+  "entities": {
+    "PortalSettings": {
+      "title": "PortalSettings",
+      "description": "BNHS Library Portal banner, schedule text, welcome heading, and visual asset settings.",
+      "type": "object",
+      "properties": {
+        "portalTitle": { "type": "string", "maxLength": 300 },
+        "welcomeHeading": { "type": "string", "maxLength": 300 },
+        "welcomeSubtext": { "type": "string", "maxLength": 2000 },
+        "scheduleBannerText": { "type": "string", "maxLength": 500 },
+        "heroImageUrl": { "type": "string", "maxLength": 500000 },
+        "logoImageUrl": { "type": "string", "maxLength": 500000 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["portalTitle", "welcomeHeading", "scheduleBannerText", "ownerUid", "updatedAt"]
+    },
+    "Book": {
+      "title": "Book",
+      "description": "Registered physical book holding in the BNHS Library catalog.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "title": { "type": "string", "maxLength": 500 },
+        "author": { "type": "string", "maxLength": 500 },
+        "isbn": { "type": "string", "maxLength": 128 },
+        "subject": { "type": "string", "maxLength": 200 },
+        "category": { "type": "string", "maxLength": 200 },
+        "publisher": { "type": "string", "maxLength": 300 },
+        "publicationYear": { "type": "number" },
+        "shelfLocation": { "type": "string", "maxLength": 200 },
+        "totalCopies": { "type": "number" },
+        "availableCopies": { "type": "number" },
+        "description": { "type": "string", "maxLength": 5000 },
+        "coverKey": { "type": "string", "maxLength": 500000 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "title", "author", "isbn", "category", "totalCopies", "availableCopies", "ownerUid"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "BNHS Library shelf classification and zone.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "name": { "type": "string", "maxLength": 200 },
+        "code": { "type": "string", "maxLength": 64 },
+        "shelfZone": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "name", "code", "shelfZone", "ownerUid"]
+    },
+    "DigitalResource": {
+      "title": "DigitalResource",
+      "description": "Digital learning material, module, e-book, or journal in BNHS Digital Library.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "title": { "type": "string", "maxLength": 500 },
+        "author": { "type": "string", "maxLength": 300 },
+        "resourceType": { "type": "string", "maxLength": 100 },
+        "subject": { "type": "string", "maxLength": 200 },
+        "gradeLevel": { "type": "string", "maxLength": 200 },
+        "fileSize": { "type": "string", "maxLength": 100 },
+        "pageCount": { "type": "number" },
+        "downloadCount": { "type": "number" },
+        "summary": { "type": "string", "maxLength": 5000 },
+        "contentPreview": { "type": "string", "maxLength": 200000 },
+        "externalUrl": { "type": "string", "maxLength": 600000 },
+        "uploadedBy": { "type": "string", "maxLength": 200 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "title", "author", "resourceType", "subject", "ownerUid"]
+    },
+    "BorrowRecord": {
+      "title": "BorrowRecord",
+      "description": "Book borrowing and return circulation transaction.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "transactionCode": { "type": "string", "maxLength": 100 },
+        "bookId": { "type": "number" },
+        "borrowerUid": { "type": "string", "maxLength": 128 },
+        "borrowerName": { "type": "string", "maxLength": 200 },
+        "borrowerRole": { "type": "string", "maxLength": 64 },
+        "borrowerIdNumber": { "type": "string", "maxLength": 100 },
+        "issueDate": { "type": "string", "maxLength": 64 },
+        "dueDate": { "type": "string", "maxLength": 64 },
+        "returnDate": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "maxLength": 32 },
+        "remarks": { "type": "string", "maxLength": 1000 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "transactionCode", "bookId", "borrowerName", "status", "ownerUid"]
+    },
+    "WaitlistRequest": {
+      "title": "WaitlistRequest",
+      "description": "Student notification request for a borrowed book return.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "bookId": { "type": "number" },
+        "bookTitle": { "type": "string", "maxLength": 500 },
+        "studentName": { "type": "string", "maxLength": 200 },
+        "studentIdNumber": { "type": "string", "maxLength": 100 },
+        "requestedAt": { "type": "string", "maxLength": 64 },
+        "fulfilled": { "type": "boolean" },
+        "returnedAt": { "type": "string", "maxLength": 64 },
+        "ownerUid": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "bookId", "bookTitle", "studentName", "fulfilled", "ownerUid"]
+    },
+    "MemberPublic": {
+      "title": "MemberPublic",
+      "description": "Public directory info for BNHS library members (no PII).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "uid": { "type": "string", "maxLength": 128 },
+        "fullName": { "type": "string", "maxLength": 200 },
+        "role": { "type": "string", "maxLength": 64 },
+        "idNumber": { "type": "string", "maxLength": 100 },
+        "gradeOrDepartment": { "type": "string", "maxLength": 200 },
+        "status": { "type": "string", "maxLength": 32 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "uid", "fullName", "role", "status", "ownerUid"]
+    },
+    "MemberPrivate": {
+      "title": "MemberPrivate",
+      "description": "Private PII (email) for BNHS library members, strictly isolated to owner/admin.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 254 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["uid", "email", "ownerUid"]
+    },
+    "AssetChunk": {
+      "title": "AssetChunk",
+      "description": "Chunked payload segment for uploaded binary files and images exceeding single-field size.",
+      "type": "object",
+      "properties": {
+        "assetKey": { "type": "string", "maxLength": 128 },
+        "index": { "type": "number" },
+        "total": { "type": "number" },
+        "data": { "type": "string", "maxLength": 500000 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["assetKey", "index", "total", "data", "ownerUid"]
+    }
+  },
+  "firestore": {
+    "/portal_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/PortalSettings" },
+      "description": "Portal banner, schedule text, hero image, and school logo settings."
+    },
+    "/books/{bookId}": {
+      "schema": { "$ref": "#/entities/Book" },
+      "description": "Catalog book records."
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Library shelf categories."
+    },
+    "/digital_resources/{resourceId}": {
+      "schema": { "$ref": "#/entities/DigitalResource" },
+      "description": "Digital library materials and modules."
+    },
+    "/borrow_records/{recordId}": {
+      "schema": { "$ref": "#/entities/BorrowRecord" },
+      "description": "Book circulation transactions."
+    },
+    "/waitlist_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/WaitlistRequest" },
+      "description": "Book return waitlist notifications."
+    },
+    "/members_public/{memberId}": {
+      "schema": { "$ref": "#/entities/MemberPublic" },
+      "description": "Public directory of BNHS library members without email PII."
+    },
+    "/members_private/{memberId}": {
+      "schema": { "$ref": "#/entities/MemberPrivate" },
+      "description": "Private member email PII accessible only by owner or admin."
+    },
+    "/asset_chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/AssetChunk" },
+      "description": "Chunked large image/document payloads."
+    }
+  }
+}

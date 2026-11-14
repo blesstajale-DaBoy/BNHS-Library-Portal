@@ -1713,6 +1713,7 @@ interface GoogleSignInModalProps {
   isOpen: boolean;
   users?: LibraryUser[];
   onClose: () => void;
+  onGooglePopupSignIn?: () => Promise<boolean>;
   onSelectAccount: (account: {
     fullName: string;
     email: string;
@@ -1726,6 +1727,7 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
   isOpen,
   users = [],
   onClose,
+  onGooglePopupSignIn,
   onSelectAccount,
 }) => {
   const activeUsersList = users.length > 0 ? users : INITIAL_USERS;
@@ -1794,6 +1796,37 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
         </div>
 
         <div className="p-5 space-y-4 text-xs max-h-[82vh] overflow-y-auto">
+          {onGooglePopupSignIn && (
+            <div className="rounded-lg border border-[#D4AF37] bg-[#FFFBEB] p-3 space-y-2">
+              <div className="font-bold text-[#420B17]">
+                Connect Real Google Account (Live Preview ↔ Published Sync)
+              </div>
+              <p className="text-[11px] text-neutral-700 leading-relaxed">
+                Sign in with your verified Google account (e.g. blesstajale@gmail.com) so edits & uploaded files in Preview mirror automatically to Live Published across all browsers.
+              </p>
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={async () => {
+                  setSubmitting(true);
+                  try {
+                    await onGooglePopupSignIn();
+                  } finally {
+                    setSubmitting(false);
+                  }
+                }}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-[#641526] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#4d0f1d] disabled:opacity-50 shadow-sm"
+              >
+                <LogIn className="h-4 w-4 text-[#D4AF37]" />
+                <span>
+                  {submitting
+                    ? 'Connecting Google Account...'
+                    : 'Sign In with Google Account (Live Cloud Sync)'}
+                </span>
+              </button>
+            </div>
+          )}
+
           <div>
             <div className="font-semibold text-neutral-700 mb-2">
               Quick Sign-In with Google / BNHS Account:

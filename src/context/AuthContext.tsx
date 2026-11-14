@@ -23,6 +23,7 @@ interface AuthContextValue {
   openSignInModal: () => void;
   closeSignInModal: () => void;
   signInWithGoogle: () => Promise<void>;
+  signInWithGooglePopup: () => Promise<boolean>;
   signInWithPortalAccount: (account: {
     fullName: string;
     email: string;
@@ -192,6 +193,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  const signInWithGooglePopup = async (): Promise<boolean> => {
+    if (popupInFlightRef.current) {
+      return false;
+    }
+    popupInFlightRef.current = true;
+    setSigningIn(true);
+    setAuthError(null);
+    try {
+      const cred = await signInWithPopup(auth, googleAuthProvider);
+      if (cred?.user) {
+        setFirebaseUser(cred.user);
+        setIsSignedInAccount(true);
+        setIsSignInModalOpen(false);
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      const code = err?.code || '';
+      if (code === 'auth/popup-blocked') {
+        setAuthError(
+          'Browser blocked the Google sign-in popup. Please allow popups for this site and click "Sign In with Google Account" again.'
+        );
+      } else if (code === 'auth/unauthorized-domain') {
+        setAuthError(
+          'This domain is not yet allowlisted in Firebase Auth. Open Firebase Console -> Authentication -> Settings -> Authorized domains to enable Google Sign-In here.'
+        );
+      } else if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
+        setAuthError(err?.message || 'Google Sign-In failed. Please try again.');
+      }
+      return false;
+    } finally {
+      popupInFlightRef.current = false;
+      setSigningIn(false);
+    }
+  };
+
   const signInWithGoogle = async () => {
     // Open the persistent in-portal Google Sign-In modal so it never flashes and disappears in published live/iframe domains
     openSignInModal();
@@ -203,11 +240,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       const cred = await signInWithPopup(auth, googleAuthProvider);
       if (cred?.user) {
+        setFirebaseUser(cred.user);
         setIsSignedInAccount(true);
         setIsSignInModalOpen(false);
       }
     } catch {
-      // Keep the in-portal Google Sign-In modal open so the user can sign in with one click even when browser popups or unauthorized preview domains block Firebase popup
+      // Keep the in-portal Google Sign-In modal open so the user can sign in with one click
     } finally {
       popupInFlightRef.current = false;
     }
@@ -273,6 +311,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         openSignInModal,
         closeSignInModal,
         signInWithGoogle,
+        signInWithGooglePopup,
         signInWithPortalAccount,
         signOut,
         getAuthHeaders,

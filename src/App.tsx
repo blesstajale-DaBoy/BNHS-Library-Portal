@@ -83,6 +83,22 @@ import {
   computeStatsFromLibraryData,
   resolvePortalAssetUrl,
 } from './data/bnhsInitialData.ts';
+import {
+  isVerifiedFirebaseSyncReady,
+  seedOrPushAllToFirestore,
+  subscribeToSharedPortalFirestore,
+  syncBookToFirestore,
+  deleteBookFromFirestore,
+  syncCategoryToFirestore,
+  deleteCategoryFromFirestore,
+  syncDigitalResourceToFirestore,
+  deleteDigitalResourceFromFirestore,
+  syncBorrowRecordToFirestore,
+  syncWaitlistRequestToFirestore,
+  syncPortalSettingsToFirestore,
+  syncUserToFirestore,
+  deleteUserFromFirestore,
+} from './lib/firestoreSync.ts';
 
 type PortalModule =
   | 'dashboard'
@@ -338,6 +354,7 @@ function LibraryPortalContent() {
     isSignInModalOpen,
     closeSignInModal,
     signInWithGoogle,
+    signInWithGooglePopup,
     signInWithPortalAccount,
     signOut,
     getAuthHeaders,
@@ -531,10 +548,32 @@ function LibraryPortalContent() {
     'Cloud Synced (Auto-Saved)'
   );
   const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
+  const [needsGoogleLiveSync, setNeedsGoogleLiveSync] = useState<boolean>(false);
   const isPushingCloudRef = useRef(false);
   const hasHydratedInitialRef = useRef(false);
+  const hasFirestoreLiveUpdateRef = useRef(false);
+  const pendingLocalFirestoreSyncRef = useRef(false);
   const skipNextAutoSyncRef = useRef(false);
   const memberFormDirtyRef = useRef(false);
+
+  const latestPortalStateRef = useRef({
+    portalSettings,
+    books,
+    categories,
+    digitalResources,
+    borrowRecords,
+    waitlistRequests,
+    users,
+  });
+  latestPortalStateRef.current = {
+    portalSettings,
+    books,
+    categories,
+    digitalResources,
+    borrowRecords,
+    waitlistRequests,
+    users,
+  };
 
   const markCloudSyncedAutoSaved = () => {
     const nowTime = new Date().toLocaleTimeString([], {
@@ -552,6 +591,24 @@ function LibraryPortalContent() {
     }, 5500);
   };
 
+  const queueOrSyncFirestore = async (task: () => Promise<unknown>) => {
+    if (!isVerifiedFirebaseSyncReady()) {
+      pendingLocalFirestoreSyncRef.current = true;
+      setNeedsGoogleLiveSync(true);
+      return;
+    }
+    try {
+      await task();
+      pendingLocalFirestoreSyncRef.current = false;
+      setNeedsGoogleLiveSync(false);
+      markCloudSyncedAutoSaved();
+    } catch (err) {
+      pendingLocalFirestoreSyncRef.current = true;
+      setNeedsGoogleLiveSync(true);
+      console.error('Shared Firestore sync error:', err);
+    }
+  };
+
   // Automatically keep stats synchronized whenever books, borrows, digital resources, or users change
   useEffect(() => {
     setStats(
@@ -560,7 +617,9 @@ function LibraryPortalContent() {
   }, [books, borrowRecords, digitalResources, users]);
 
   const fetchOverview = async (silent = false) => {
-    if (silent && isPushingCloudRef.current) return;
+    if (silent && (isPushingCloudRef.current || hasFirestoreLiveUpdateRef.current)) {
+      return;
+    }
     if (!silent) setIsCloudSyncing(true);
     try {
       const res = await fetch('/api/library/overview', {
@@ -571,7 +630,10 @@ function LibraryPortalContent() {
         throw new Error('Failed to fetch library records');
       }
       const data = await res.json();
-      if (silent && isPushingCloudRef.current) return;
+      if (isPushingCloudRef.current || hasFirestoreLiveUpdateRef.current) {
+        hasHydratedInitialRef.current = true;
+        return;
+      }
       skipNextAutoSyncRef.current = true;
       if (Array.isArray(data.books)) {
         setBooks(data.books);
@@ -657,7 +719,7 @@ function LibraryPortalContent() {
       }
       saveDigitalResourcesCache(digitalToSave);
 
-      const res = await fetch('/api/cloud-sync', {
+      await fetch('/api/cloud-sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -665,16 +727,25 @@ function LibraryPortalContent() {
           digitalResources: digitalToSave,
           waitlistRequests,
         }),
+      }).catch(() => {});
+
+      await queueOrSyncFirestore(async () => {
+        await syncPortalSettingsToFirestore(settingsToSave);
+        await Promise.all(
+          digitalToSave.map((item) => syncDigitalResourceToFirestore(item))
+        );
+        await Promise.all(
+          waitlistRequests.map((item) => syncWaitlistRequestToFirestore(item))
+        );
       });
-      if (res.ok) {
-        markCloudSyncedAutoSaved();
-      } else {
-        markCloudSyncedAutoSaved();
-      }
+
+      markCloudSyncedAutoSaved();
       if (!silent) {
         showToast(
           'success',
-          'Cloud Synced (Auto-Saved) — all files, books, borrowers, and portal settings are saved.'
+          isVerifiedFirebaseSyncReady()
+            ? 'Cloud Synced (Auto-Saved) — live in both Preview and Published across all browsers.'
+            : 'Saved locally & to SQL. Connect Google Live Sync in the top bar to mirror across other browsers.'
         );
       }
     } catch {
@@ -692,8 +763,32 @@ function LibraryPortalContent() {
   };
 
   const handleManualCloudSync = async () => {
-    await pushAutoCloudSync(portalSettings, digitalResources, false);
-    await fetchOverview(true);
+    if (!isVerifiedFirebaseSyncReady()) {
+      await pushAutoCloudSync(portalSettings, digitalResources, true);
+      const signedIn = await signInWithGooglePopup();
+      if (!signedIn) {
+        showToast(
+          'success',
+          'Saved locally. Sign in with Google to push Preview edits to Live Published across all browsers.'
+        );
+      }
+      return;
+    }
+    setIsCloudSyncing(true);
+    try {
+      await seedOrPushAllToFirestore(latestPortalStateRef.current, true);
+      pendingLocalFirestoreSyncRef.current = false;
+      setNeedsGoogleLiveSync(false);
+      markCloudSyncedAutoSaved();
+      showToast(
+        'success',
+        'Cloud Synced (Auto-Saved) — all files, books, users, borrowers, and portal settings are synced live across Preview & Published.'
+      );
+    } catch {
+      showToast('error', 'Failed to complete Live Cloud Sync. Please try again.');
+    } finally {
+      setIsCloudSyncing(false);
+    }
   };
 
   // Auto-save digital resource draft as files/inputs are entered
@@ -742,7 +837,7 @@ function LibraryPortalContent() {
     return () => window.clearTimeout(timer);
   }, [memberForm]);
 
-  // Initial load + Automatic Background Cloud Sync across mobile, tablet, laptop & desktop
+  // Initial load + Real-Time Shared Firestore Sync (Preview <-> Live Published across all browsers)
   useEffect(() => {
     try {
       const cached = localStorage.getItem('bnhs_portal_settings_cache');
@@ -752,15 +847,74 @@ function LibraryPortalContent() {
     } catch {
       // ignore cache parse errors
     }
-    fetchOverview();
+    void fetchOverview();
+
+    const unsubscribeFirestore = subscribeToSharedPortalFirestore({
+      onPortalSettings: (remoteSettings) => {
+        hasFirestoreLiveUpdateRef.current = true;
+        skipNextAutoSyncRef.current = true;
+        const resolved: PortalSettings = {
+          ...remoteSettings,
+          heroImageUrl: resolvePortalAssetUrl(
+            remoteSettings.heroImageUrl,
+            DEFAULT_HERO_IMAGE_PATH
+          ),
+          logoImageUrl: resolvePortalAssetUrl(
+            remoteSettings.logoImageUrl,
+            DEFAULT_CREST_ANIMATED_GIF_PATH
+          ),
+        };
+        setPortalSettings(resolved);
+        setHeroImgFailed(false);
+        setCrestImgFailed(false);
+        try {
+          localStorage.setItem(
+            'bnhs_portal_settings_cache',
+            JSON.stringify(resolved)
+          );
+        } catch {
+          // ignore
+        }
+      },
+      onBooks: (remoteBooks) => {
+        hasFirestoreLiveUpdateRef.current = true;
+        setBooks(remoteBooks);
+      },
+      onCategories: (remoteCategories) => {
+        hasFirestoreLiveUpdateRef.current = true;
+        setCategories(remoteCategories);
+      },
+      onDigitalResources: (remoteResources) => {
+        hasFirestoreLiveUpdateRef.current = true;
+        skipNextAutoSyncRef.current = true;
+        setDigitalResources(remoteResources);
+        saveDigitalResourcesCache(remoteResources);
+      },
+      onBorrowRecords: (remoteBorrows) => {
+        hasFirestoreLiveUpdateRef.current = true;
+        setBorrowRecords(remoteBorrows);
+      },
+      onWaitlistRequests: (remoteWaitlist) => {
+        hasFirestoreLiveUpdateRef.current = true;
+        skipNextAutoSyncRef.current = true;
+        setWaitlistRequests(remoteWaitlist);
+      },
+      onUsers: (remoteUsers) => {
+        hasFirestoreLiveUpdateRef.current = true;
+        setUsers(remoteUsers);
+      },
+      onRemoteSyncActivity: () => {
+        markCloudSyncedAutoSaved();
+      },
+    });
 
     const syncInterval = window.setInterval(() => {
-      fetchOverview(true);
-    }, 5000);
+      void fetchOverview(true);
+    }, 8000);
 
     const handleVisibilityOrOnline = () => {
       if (document.visibilityState === 'visible') {
-        fetchOverview(true);
+        void fetchOverview(true);
       }
     };
     window.addEventListener('online', handleVisibilityOrOnline);
@@ -768,6 +922,7 @@ function LibraryPortalContent() {
     document.addEventListener('visibilitychange', handleVisibilityOrOnline);
 
     return () => {
+      unsubscribeFirestore();
       window.clearInterval(syncInterval);
       window.removeEventListener('online', handleVisibilityOrOnline);
       window.removeEventListener('focus', handleVisibilityOrOnline);
@@ -777,6 +932,40 @@ function LibraryPortalContent() {
       );
     };
   }, []);
+
+  // Automatically seed/push Preview state to shared Firestore when signed in with Google
+  useEffect(() => {
+    if (!firebaseUser || !firebaseUser.emailVerified) return;
+    let cancelled = false;
+    const syncOnAuth = async () => {
+      const shouldForcePush = pendingLocalFirestoreSyncRef.current;
+      try {
+        const pushed = await seedOrPushAllToFirestore(
+          latestPortalStateRef.current,
+          shouldForcePush
+        );
+        if (cancelled) return;
+        pendingLocalFirestoreSyncRef.current = false;
+        setNeedsGoogleLiveSync(false);
+        markCloudSyncedAutoSaved();
+        if (pushed) {
+          showToast(
+            'success',
+            'Google Live Sync Connected — Preview & Live Published are now synced in real time across all browsers!'
+          );
+        }
+      } catch (err) {
+        console.error('Initial Firestore seed failed:', err);
+      }
+    };
+    const timer = window.setTimeout(() => {
+      void syncOnAuth();
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [firebaseUser?.uid, firebaseUser?.emailVerified]);
 
   const currentPermissions = ROLE_PERMISSIONS[activeRole];
 
@@ -1005,6 +1194,7 @@ function LibraryPortalContent() {
     } catch {
       // ignore
     }
+    let finalSettings = resolvedUpdated;
     try {
       const headers = await getAuthHeaders();
       const res = await fetch('/api/portal-settings', {
@@ -1026,6 +1216,7 @@ function LibraryPortalContent() {
               DEFAULT_CREST_ANIMATED_GIF_PATH
             ),
           };
+          finalSettings = syncedSettings;
           skipNextAutoSyncRef.current = true;
           setPortalSettings(syncedSettings);
           try {
@@ -1038,6 +1229,9 @@ function LibraryPortalContent() {
           }
         }
       }
+      await queueOrSyncFirestore(() =>
+        syncPortalSettingsToFirestore(finalSettings)
+      );
       markCloudSyncedAutoSaved();
     } catch {
       // Local state and localStorage cache already updated
@@ -1070,8 +1264,15 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to subscribe.');
-      if (data.waitlistRequests) {
+      if (Array.isArray(data.waitlistRequests)) {
+        skipNextAutoSyncRef.current = true;
         setWaitlistRequests(data.waitlistRequests);
+        const latestItem = data.waitlistRequests[0];
+        if (latestItem) {
+          await queueOrSyncFirestore(() =>
+            syncWaitlistRequestToFirestore(latestItem)
+          );
+        }
       }
       markCloudSyncedAutoSaved();
       showToast(
@@ -1090,6 +1291,7 @@ function LibraryPortalContent() {
       return;
     }
     setSubmitting(true);
+    isPushingCloudRef.current = true;
     try {
       const headers = await getAuthHeaders();
       const res = await fetch('/api/books', {
@@ -1099,7 +1301,12 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to add book.');
-      await fetchOverview();
+      const addedBook: BookItem = data.book;
+      setBooks((prev) => [
+        addedBook,
+        ...prev.filter((b) => b.id !== addedBook.id),
+      ]);
+      await queueOrSyncFirestore(() => syncBookToFirestore(addedBook));
       setIsAddBookOpen(false);
       setNewBookForm({
         title: '',
@@ -1117,11 +1324,12 @@ function LibraryPortalContent() {
       markCloudSyncedAutoSaved();
       showToast(
         'success',
-        `"${data.book.title}" registered & Cloud Synced (Auto-Saved).`
+        `"${addedBook.title}" registered & Cloud Synced (Auto-Saved).`
       );
     } catch (err: any) {
       showToast('error', err.message);
     } finally {
+      isPushingCloudRef.current = false;
       setSubmitting(false);
     }
   };
@@ -1133,8 +1341,27 @@ function LibraryPortalContent() {
   ) => {
     isPushingCloudRef.current = true;
     setIsCloudSyncing(true);
+    const existingBook = books.find((b) => b.id === bookId);
+    const optimisticBook: BookItem = {
+      ...(existingBook || {
+        id: bookId,
+        title: 'Book',
+        author: 'BNHS Faculty',
+        isbn: `ISBN-${bookId}`,
+        subject: 'General',
+        category: 'General',
+        publisher: 'DepEd',
+        publicationYear: 2025,
+        shelfLocation: 'Main',
+        totalCopies: 1,
+        availableCopies: 1,
+        description: '',
+        coverKey: 'history',
+      }),
+      ...updated,
+    };
     setBooks((prev) =>
-      prev.map((b) => (b.id === bookId ? { ...b, ...updated } : b))
+      prev.map((b) => (b.id === bookId ? optimisticBook : b))
     );
     try {
       const headers = await getAuthHeaders();
@@ -1145,20 +1372,22 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update book.');
-      if (data?.book) {
-        setBooks((prev) =>
-          prev.map((b) => (b.id === bookId ? { ...b, ...data.book } : b))
-        );
-      }
+      const finalBook: BookItem = data?.book
+        ? { ...optimisticBook, ...data.book }
+        : optimisticBook;
+      setBooks((prev) =>
+        prev.map((b) => (b.id === bookId ? finalBook : b))
+      );
+      await queueOrSyncFirestore(() => syncBookToFirestore(finalBook));
       markCloudSyncedAutoSaved();
       if (!silentAutoSave) {
-        await fetchOverview();
         showToast(
           'success',
-          `Updated & Cloud-Synced catalog record for "${data.book?.title || updated.title || 'Book'}".`
+          `Updated & Cloud-Synced catalog record for "${finalBook.title}".`
         );
       }
     } catch (err: any) {
+      await queueOrSyncFirestore(() => syncBookToFirestore(optimisticBook));
       if (!silentAutoSave) {
         showToast('error', err.message);
       }
@@ -1173,6 +1402,7 @@ function LibraryPortalContent() {
       showToast('error', 'Please sign in to manage book inventory.');
       return;
     }
+    isPushingCloudRef.current = true;
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/books/${book.id}`, {
@@ -1181,11 +1411,14 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to delete book.');
-      await fetchOverview();
+      setBooks((prev) => prev.filter((b) => b.id !== book.id));
+      await queueOrSyncFirestore(() => deleteBookFromFirestore(book.id));
       markCloudSyncedAutoSaved();
       showToast('success', `Removed "${book.title}" from catalog inventory.`);
     } catch (err: any) {
       showToast('error', err.message);
+    } finally {
+      isPushingCloudRef.current = false;
     }
   };
 
@@ -1199,6 +1432,7 @@ function LibraryPortalContent() {
       return;
     }
     setSubmitting(true);
+    isPushingCloudRef.current = true;
     try {
       const headers = await getAuthHeaders();
       const res = await fetch('/api/borrows', {
@@ -1211,16 +1445,39 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to issue book.');
-      await fetchOverview();
+      const newRecord: BorrowRecord = data.record;
+      setBorrowRecords((prev) => [
+        newRecord,
+        ...prev.filter((r) => r.id !== newRecord.id),
+      ]);
+      const targetBook = books.find((b) => b.id === Number(borrowForm.bookId));
+      const updatedBook = targetBook
+        ? {
+            ...targetBook,
+            availableCopies: Math.max(0, targetBook.availableCopies - 1),
+          }
+        : null;
+      if (updatedBook) {
+        setBooks((prev) =>
+          prev.map((b) => (b.id === updatedBook.id ? updatedBook : b))
+        );
+      }
+      await queueOrSyncFirestore(async () => {
+        await syncBorrowRecordToFirestore(newRecord);
+        if (updatedBook) {
+          await syncBookToFirestore(updatedBook);
+        }
+      });
       setBorrowModalBook(null);
       markCloudSyncedAutoSaved();
       showToast(
         'success',
-        `Borrow transaction ${data.record.transactionCode} recorded & Cloud Synced.`
+        `Borrow transaction ${newRecord.transactionCode} recorded & Cloud Synced.`
       );
     } catch (err: any) {
       showToast('error', err.message);
     } finally {
+      isPushingCloudRef.current = false;
       setSubmitting(false);
     }
   };
@@ -1230,6 +1487,7 @@ function LibraryPortalContent() {
       showToast('error', 'Please sign in to process book returns.');
       return;
     }
+    isPushingCloudRef.current = true;
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/borrows/${record.id}/return`, {
@@ -1239,7 +1497,51 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to return book.');
-      await fetchOverview();
+      const updatedRecord: BorrowRecord = data.record || {
+        ...record,
+        status: 'Returned',
+        returnDate: todayStr,
+      };
+      setBorrowRecords((prev) =>
+        prev.map((r) => (r.id === record.id ? updatedRecord : r))
+      );
+      const targetBook = books.find((b) => b.id === record.bookId);
+      const updatedBook = targetBook
+        ? {
+            ...targetBook,
+            availableCopies: Math.min(
+              targetBook.totalCopies,
+              targetBook.availableCopies + 1
+            ),
+          }
+        : null;
+      if (updatedBook) {
+        setBooks((prev) =>
+          prev.map((b) => (b.id === updatedBook.id ? updatedBook : b))
+        );
+      }
+      const nextWaitlist = Array.isArray(data.waitlistRequests)
+        ? data.waitlistRequests
+        : waitlistRequests.map((w) =>
+            w.bookId === record.bookId && !w.fulfilled
+              ? { ...w, fulfilled: true, returnedAt: todayStr }
+              : w
+          );
+      skipNextAutoSyncRef.current = true;
+      setWaitlistRequests(nextWaitlist);
+
+      await queueOrSyncFirestore(async () => {
+        await syncBorrowRecordToFirestore(updatedRecord);
+        if (updatedBook) {
+          await syncBookToFirestore(updatedBook);
+        }
+        await Promise.all(
+          nextWaitlist
+            .filter((w: BookWaitlistRequest) => w.bookId === record.bookId)
+            .map((w: BookWaitlistRequest) => syncWaitlistRequestToFirestore(w))
+        );
+      });
+
       markCloudSyncedAutoSaved();
       const bkTitle =
         bookById.get(record.bookId)?.title || `Book #${record.bookId}`;
@@ -1249,6 +1551,8 @@ function LibraryPortalContent() {
       );
     } catch (err: any) {
       showToast('error', err.message);
+    } finally {
+      isPushingCloudRef.current = false;
     }
   };
 
@@ -1257,6 +1561,7 @@ function LibraryPortalContent() {
       showToast('error', 'Please sign in to update transaction status.');
       return;
     }
+    isPushingCloudRef.current = true;
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/borrows/${record.id}/overdue`, {
@@ -1265,7 +1570,16 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to mark overdue.');
-      await fetchOverview();
+      const updatedRecord: BorrowRecord = data.record || {
+        ...record,
+        status: 'Overdue',
+      };
+      setBorrowRecords((prev) =>
+        prev.map((r) => (r.id === record.id ? updatedRecord : r))
+      );
+      await queueOrSyncFirestore(() =>
+        syncBorrowRecordToFirestore(updatedRecord)
+      );
       markCloudSyncedAutoSaved();
       showToast(
         'success',
@@ -1273,6 +1587,8 @@ function LibraryPortalContent() {
       );
     } catch (err: any) {
       showToast('error', err.message);
+    } finally {
+      isPushingCloudRef.current = false;
     }
   };
 
@@ -1388,6 +1704,9 @@ function LibraryPortalContent() {
       } catch {
         // ignore
       }
+      await queueOrSyncFirestore(() =>
+        syncDigitalResourceToFirestore(savedResource)
+      );
       setIsUploadDigitalOpen(false);
       setAttachedUploadFileName('');
       setDigitalUploadPreviewOpen(false);
@@ -1412,6 +1731,9 @@ function LibraryPortalContent() {
       const nextList = [localNewItem, ...digitalResources];
       setDigitalResources(nextList);
       saveDigitalResourcesCache(nextList);
+      await queueOrSyncFirestore(() =>
+        syncDigitalResourceToFirestore(localNewItem)
+      );
       setIsUploadDigitalOpen(false);
       showToast(
         'success',
@@ -1457,6 +1779,7 @@ function LibraryPortalContent() {
     setDigitalResources(optimisticList);
     saveDigitalResourcesCache(optimisticList);
 
+    let syncedResource = mergedLocal;
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/digital-resources/${resourceId}`, {
@@ -1468,6 +1791,7 @@ function LibraryPortalContent() {
         const data = await res.json();
         if (data?.resource) {
           const syncedItem = { ...mergedLocal, ...data.resource };
+          syncedResource = syncedItem;
           const syncedList = optimisticList.map((r) =>
             r.id === resourceId ? syncedItem : r
           );
@@ -1480,19 +1804,22 @@ function LibraryPortalContent() {
             // ignore
           }
           await pushAutoCloudSync(portalSettings, syncedList, true);
-          if (!silentAutoSave) {
-            void fetchOverview(true);
-          }
         }
       }
+      await queueOrSyncFirestore(() =>
+        syncDigitalResourceToFirestore(syncedResource)
+      );
       markCloudSyncedAutoSaved();
       if (!silentAutoSave) {
         showToast(
           'success',
-          `Updated & Cloud-Synced digital resource "${mergedLocal.title}".`
+          `Updated & Cloud-Synced digital resource "${syncedResource.title}".`
         );
       }
     } catch {
+      await queueOrSyncFirestore(() =>
+        syncDigitalResourceToFirestore(syncedResource)
+      );
       if (!silentAutoSave) {
         showToast(
           'success',
@@ -1528,8 +1855,13 @@ function LibraryPortalContent() {
         headers,
       });
       await pushAutoCloudSync(portalSettings, nextList, true);
+      await queueOrSyncFirestore(() =>
+        deleteDigitalResourceFromFirestore(resItem.id)
+      );
     } catch {
-      // Deletion persisted locally
+      await queueOrSyncFirestore(() =>
+        deleteDigitalResourceFromFirestore(resItem.id)
+      );
     } finally {
       isPushingCloudRef.current = false;
     }
@@ -1588,6 +1920,7 @@ function LibraryPortalContent() {
       showToast('error', 'Please sign in to add shelf categories.');
       return;
     }
+    isPushingCloudRef.current = true;
     try {
       const headers = await getAuthHeaders();
       const res = await fetch('/api/categories', {
@@ -1597,12 +1930,19 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to add category.');
-      await fetchOverview();
+      const createdCat: BookCategory = data.category;
+      setCategories((prev) => [
+        ...prev.filter((c) => c.id !== createdCat.id),
+        createdCat,
+      ]);
+      await queueOrSyncFirestore(() => syncCategoryToFirestore(createdCat));
       setCategoryForm({ name: '', code: '', shelfZone: '', description: '' });
       markCloudSyncedAutoSaved();
-      showToast('success', `Category "${data.category.name}" added & Cloud Synced.`);
+      showToast('success', `Category "${createdCat.name}" added & Cloud Synced.`);
     } catch (err: any) {
       showToast('error', err.message);
+    } finally {
+      isPushingCloudRef.current = false;
     }
   };
 
@@ -1613,8 +1953,19 @@ function LibraryPortalContent() {
   ) => {
     isPushingCloudRef.current = true;
     setIsCloudSyncing(true);
+    const existingCat = categories.find((c) => c.id === categoryId);
+    const optimisticCat: BookCategory = {
+      ...(existingCat || {
+        id: categoryId,
+        name: 'Category',
+        code: 'GEN',
+        shelfZone: 'Main Wing',
+        description: '',
+      }),
+      ...updated,
+    };
     setCategories((prev) =>
-      prev.map((c) => (c.id === categoryId ? { ...c, ...updated } : c))
+      prev.map((c) => (c.id === categoryId ? optimisticCat : c))
     );
     try {
       const headers = await getAuthHeaders();
@@ -1625,20 +1976,22 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update category.');
-      if (data?.category) {
-        setCategories((prev) =>
-          prev.map((c) => (c.id === categoryId ? { ...c, ...data.category } : c))
-        );
-      }
+      const finalCat: BookCategory = data?.category
+        ? { ...optimisticCat, ...data.category }
+        : optimisticCat;
+      setCategories((prev) =>
+        prev.map((c) => (c.id === categoryId ? finalCat : c))
+      );
+      await queueOrSyncFirestore(() => syncCategoryToFirestore(finalCat));
       markCloudSyncedAutoSaved();
       if (!silentAutoSave) {
-        await fetchOverview();
         showToast(
           'success',
-          `Updated shelf category "${data.category?.name || updated.name || 'Category'}".`
+          `Updated shelf category "${finalCat.name}".`
         );
       }
     } catch (err: any) {
+      await queueOrSyncFirestore(() => syncCategoryToFirestore(optimisticCat));
       if (!silentAutoSave) {
         showToast('error', err.message);
       }
@@ -1649,6 +2002,7 @@ function LibraryPortalContent() {
   };
 
   const handleDeleteCategory = async (cat: BookCategory) => {
+    isPushingCloudRef.current = true;
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/categories/${cat.id}`, {
@@ -1657,11 +2011,14 @@ function LibraryPortalContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to delete category.');
-      await fetchOverview();
+      setCategories((prev) => prev.filter((c) => c.id !== cat.id));
+      await queueOrSyncFirestore(() => deleteCategoryFromFirestore(cat.id));
       markCloudSyncedAutoSaved();
       showToast('success', `Deleted category "${cat.name}".`);
     } catch (err: any) {
       showToast('error', err.message);
+    } finally {
+      isPushingCloudRef.current = false;
     }
   };
 
@@ -1693,6 +2050,7 @@ function LibraryPortalContent() {
       return;
     }
 
+    isPushingCloudRef.current = true;
     try {
       const headers = await getAuthHeaders();
       const payload = {
@@ -1720,7 +2078,7 @@ function LibraryPortalContent() {
         createdUser,
         ...prev.filter((u) => u.id !== createdUser.id),
       ]);
-      void fetchOverview(true);
+      await queueOrSyncFirestore(() => syncUserToFirestore(createdUser));
       setMemberForm({
         editingExistingId: 0,
         fullName: '',
@@ -1736,6 +2094,8 @@ function LibraryPortalContent() {
       );
     } catch (err: any) {
       showToast('error', err.message);
+    } finally {
+      isPushingCloudRef.current = false;
     }
   };
 
@@ -1778,31 +2138,40 @@ function LibraryPortalContent() {
       refreshProfile(updatedUserObj);
     }
 
+    const modifiedBorrows: BorrowRecord[] = [];
+    const modifiedWaitlists: BookWaitlistRequest[] = [];
     if (prevUser && nextName && prevUser.fullName !== nextName) {
       if (selectedStudentName === prevUser.fullName) {
         setSelectedStudentName(nextName);
       }
       setBorrowRecords((prev) =>
-        prev.map((r) =>
-          r.borrowerName === prevUser.fullName
-            ? {
-                ...r,
-                borrowerName: nextName,
-                borrowerIdNumber:
-                  updatedUserObj.idNumber || r.borrowerIdNumber,
-              }
-            : r
-        )
+        prev.map((r) => {
+          if (r.borrowerName === prevUser.fullName) {
+            const nextRec = {
+              ...r,
+              borrowerName: nextName,
+              borrowerIdNumber:
+                updatedUserObj.idNumber || r.borrowerIdNumber,
+            };
+            modifiedBorrows.push(nextRec);
+            return nextRec;
+          }
+          return r;
+        })
       );
       setWaitlistRequests((prev) =>
-        prev.map((w) =>
-          w.studentName === prevUser.fullName
-            ? { ...w, studentName: nextName }
-            : w
-        )
+        prev.map((w) => {
+          if (w.studentName === prevUser.fullName) {
+            const nextW = { ...w, studentName: nextName };
+            modifiedWaitlists.push(nextW);
+            return nextW;
+          }
+          return w;
+        })
       );
     }
 
+    let finalUser = updatedUserObj;
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/users/${userId}`, {
@@ -1822,6 +2191,7 @@ function LibraryPortalContent() {
             id: data.user.id || userId,
             uid: data.user.uid || updatedUserObj.uid,
           };
+          finalUser = mergedServerUser;
           setUsers((prev) =>
             prev.map((u) =>
               u.id === userId || u.id === mergedServerUser.id
@@ -1835,13 +2205,19 @@ function LibraryPortalContent() {
             // ignore
           }
         }
-        if (!silentAutoSave) {
-          void fetchOverview(true);
-        }
       }
+      await queueOrSyncFirestore(async () => {
+        await syncUserToFirestore(finalUser);
+        await Promise.all(
+          modifiedBorrows.map((r) => syncBorrowRecordToFirestore(r))
+        );
+        await Promise.all(
+          modifiedWaitlists.map((w) => syncWaitlistRequestToFirestore(w))
+        );
+      });
       markCloudSyncedAutoSaved();
     } catch {
-      // Local state and localStorage cache already updated
+      await queueOrSyncFirestore(() => syncUserToFirestore(finalUser));
     } finally {
       isPushingCloudRef.current = false;
       setIsCloudSyncing(false);
@@ -1849,13 +2225,13 @@ function LibraryPortalContent() {
     if (!silentAutoSave) {
       showToast(
         'success',
-        `Updated & Cloud-Synced account "${nextName}" (${updatedUserObj.role}).`
+        `Updated & Cloud-Synced account "${nextName}" (${finalUser.role}).`
       );
     }
   };
 
   const handleDeleteUser = async (userItem: LibraryUser) => {
-    // Immediately remove from UI and persist deletion in local cache
+    isPushingCloudRef.current = true;
     saveUserDeleteToLocalCache(userItem);
     setUsers((prev) =>
       prev.filter(
@@ -1891,10 +2267,12 @@ function LibraryPortalContent() {
         } catch {
           // ignore
         }
-        void fetchOverview(true);
       }
+      await queueOrSyncFirestore(() => deleteUserFromFirestore(userItem.id));
     } catch {
-      // Deletion already applied locally
+      await queueOrSyncFirestore(() => deleteUserFromFirestore(userItem.id));
+    } finally {
+      isPushingCloudRef.current = false;
     }
     markCloudSyncedAutoSaved();
     showToast(
@@ -1907,6 +2285,7 @@ function LibraryPortalContent() {
     userItem: LibraryUser,
     nextRole: UserRole
   ) => {
+    isPushingCloudRef.current = true;
     const updatedUserObj: LibraryUser = {
       ...userItem,
       role: nextRole,
@@ -1929,10 +2308,12 @@ function LibraryPortalContent() {
         } catch {
           // ignore
         }
-        void fetchOverview(true);
       }
+      await queueOrSyncFirestore(() => syncUserToFirestore(updatedUserObj));
     } catch {
-      // Role change already persisted locally
+      await queueOrSyncFirestore(() => syncUserToFirestore(updatedUserObj));
+    } finally {
+      isPushingCloudRef.current = false;
     }
     markCloudSyncedAutoSaved();
     showToast(
@@ -2233,8 +2614,12 @@ function LibraryPortalContent() {
               type="button"
               onClick={handleManualCloudSync}
               disabled={isCloudSyncing}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-[#3A0A14] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2b060e] transition-colors whitespace-nowrap shrink-0"
-              title={`Cloud Synced (Auto-Saved)${lastSyncedAt ? ` at ${lastSyncedAt}` : ''} — Automatically saves all files and portal changes across mobile, tablet, laptop, and desktop`}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2b060e] transition-colors whitespace-nowrap shrink-0 ${
+                needsGoogleLiveSync && !firebaseUser
+                  ? 'border-[#D4AF37] bg-[#420B17]'
+                  : 'border-emerald-400/40 bg-[#3A0A14]'
+              }`}
+              title={`Cloud Synced (Auto-Saved)${lastSyncedAt ? ` at ${lastSyncedAt}` : ''} — Automatically syncs Preview & Live Published across all browsers`}
             >
               {isCloudSyncing ? (
                 <RefreshCw className="h-3.5 w-3.5 text-[#D4AF37] animate-spin shrink-0" />
@@ -2242,7 +2627,11 @@ function LibraryPortalContent() {
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
               )}
               <span>
-                {isCloudSyncing ? 'Syncing Cloud...' : lastCloudSyncLabel}
+                {isCloudSyncing
+                  ? 'Syncing Cloud...'
+                  : needsGoogleLiveSync && !firebaseUser
+                  ? 'Connect Google to Sync Live'
+                  : lastCloudSyncLabel}
               </span>
               {!isCloudSyncing && lastSyncedAt && (
                 <span className="hidden sm:inline text-[10px] font-mono text-[#D4AF37]/85">
@@ -2350,10 +2739,11 @@ function LibraryPortalContent() {
                   <Pencil className="h-3.5 w-3.5" />
                 </button>
               </div>
-              {firebaseUser || isSignedInAccount ? (
+              {firebaseUser ? (
                 <button
                   onClick={signOut}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-white/25 bg-[#3A0A14] px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs font-medium text-white hover:bg-[#2b060e] transition-colors whitespace-nowrap shrink-0"
+                  title={`Signed in via Google (${firebaseUser.email || 'Account'})`}
                 >
                   <LogOut className="h-3.5 w-3.5 text-[#D4AF37]" />
                   <span>Sign Out</span>
@@ -5166,6 +5556,7 @@ function LibraryPortalContent() {
         isOpen={isSignInModalOpen}
         users={users}
         onClose={closeSignInModal}
+        onGooglePopupSignIn={signInWithGooglePopup}
         onSelectAccount={async (account) => {
           await signInWithPortalAccount(account);
           showToast(

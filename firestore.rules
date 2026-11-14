@@ -1,0 +1,275 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'blesstajale@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidPortalSettings(data) {
+      return data.keys().hasAll(['portalTitle', 'welcomeHeading', 'scheduleBannerText', 'ownerUid', 'updatedAt'])
+        && data.keys().hasOnly(['portalTitle', 'welcomeHeading', 'welcomeSubtext', 'scheduleBannerText', 'heroImageUrl', 'logoImageUrl', 'ownerUid', 'updatedAt'])
+        && isValidString(data.portalTitle, 1, 300)
+        && isValidString(data.welcomeHeading, 1, 300)
+        && (!data.keys().hasAny(['welcomeSubtext']) || isValidString(data.welcomeSubtext, 0, 2000))
+        && isValidString(data.scheduleBannerText, 1, 500)
+        && (!data.keys().hasAny(['heroImageUrl']) || isValidString(data.heroImageUrl, 0, 500000))
+        && (!data.keys().hasAny(['logoImageUrl']) || isValidString(data.logoImageUrl, 0, 500000))
+        && isValidString(data.ownerUid, 1, 128)
+        && isValidString(data.updatedAt, 1, 64);
+    }
+
+    function isValidBook(data) {
+      return data.keys().hasAll(['id', 'title', 'author', 'isbn', 'category', 'totalCopies', 'availableCopies', 'ownerUid'])
+        && data.keys().hasOnly(['id', 'title', 'author', 'isbn', 'subject', 'category', 'publisher', 'publicationYear', 'shelfLocation', 'totalCopies', 'availableCopies', 'description', 'coverKey', 'ownerUid', 'updatedAt'])
+        && data.id is number
+        && isValidString(data.title, 1, 500)
+        && isValidString(data.author, 1, 500)
+        && isValidString(data.isbn, 1, 128)
+        && (!data.keys().hasAny(['subject']) || isValidString(data.subject, 0, 200))
+        && isValidString(data.category, 1, 200)
+        && (!data.keys().hasAny(['publisher']) || isValidString(data.publisher, 0, 300))
+        && (!data.keys().hasAny(['publicationYear']) || data.publicationYear is number)
+        && (!data.keys().hasAny(['shelfLocation']) || isValidString(data.shelfLocation, 0, 200))
+        && data.totalCopies is number && data.totalCopies >= 1
+        && data.availableCopies is number && data.availableCopies >= 0
+        && (!data.keys().hasAny(['description']) || isValidString(data.description, 0, 5000))
+        && (!data.keys().hasAny(['coverKey']) || isValidString(data.coverKey, 0, 500000))
+        && isValidString(data.ownerUid, 1, 128)
+        && (!data.keys().hasAny(['updatedAt']) || isValidString(data.updatedAt, 0, 64));
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['id', 'name', 'code', 'shelfZone', 'ownerUid'])
+        && data.keys().hasOnly(['id', 'name', 'code', 'shelfZone', 'description', 'ownerUid', 'updatedAt'])
+        && data.id is number
+        && isValidString(data.name, 1, 200)
+        && isValidString(data.code, 1, 64)
+        && isValidString(data.shelfZone, 1, 200)
+        && (!data.keys().hasAny(['description']) || isValidString(data.description, 0, 2000))
+        && isValidString(data.ownerUid, 1, 128)
+        && (!data.keys().hasAny(['updatedAt']) || isValidString(data.updatedAt, 0, 64));
+    }
+
+    function isValidDigitalResource(data) {
+      return data.keys().hasAll(['id', 'title', 'author', 'resourceType', 'subject', 'ownerUid'])
+        && data.keys().hasOnly(['id', 'title', 'author', 'resourceType', 'subject', 'gradeLevel', 'fileSize', 'pageCount', 'downloadCount', 'summary', 'contentPreview', 'externalUrl', 'uploadedBy', 'ownerUid', 'updatedAt'])
+        && data.id is number
+        && isValidString(data.title, 1, 500)
+        && isValidString(data.author, 1, 300)
+        && isValidString(data.resourceType, 1, 100)
+        && isValidString(data.subject, 1, 200)
+        && (!data.keys().hasAny(['gradeLevel']) || isValidString(data.gradeLevel, 0, 200))
+        && (!data.keys().hasAny(['fileSize']) || isValidString(data.fileSize, 0, 100))
+        && (!data.keys().hasAny(['pageCount']) || data.pageCount is number)
+        && (!data.keys().hasAny(['downloadCount']) || data.downloadCount is number)
+        && (!data.keys().hasAny(['summary']) || isValidString(data.summary, 0, 5000))
+        && (!data.keys().hasAny(['contentPreview']) || isValidString(data.contentPreview, 0, 200000))
+        && (!data.keys().hasAny(['externalUrl']) || isValidString(data.externalUrl, 0, 600000))
+        && (!data.keys().hasAny(['uploadedBy']) || isValidString(data.uploadedBy, 0, 200))
+        && isValidString(data.ownerUid, 1, 128)
+        && (!data.keys().hasAny(['updatedAt']) || isValidString(data.updatedAt, 0, 64));
+    }
+
+    function isValidBorrowRecord(data) {
+      return data.keys().hasAll(['id', 'transactionCode', 'bookId', 'borrowerName', 'status', 'ownerUid'])
+        && data.keys().hasOnly(['id', 'transactionCode', 'bookId', 'borrowerUid', 'borrowerName', 'borrowerRole', 'borrowerIdNumber', 'issueDate', 'dueDate', 'returnDate', 'status', 'remarks', 'ownerUid', 'updatedAt'])
+        && data.id is number
+        && isValidString(data.transactionCode, 1, 100)
+        && data.bookId is number
+        && (!data.keys().hasAny(['borrowerUid']) || isValidString(data.borrowerUid, 0, 128))
+        && isValidString(data.borrowerName, 1, 200)
+        && (!data.keys().hasAny(['borrowerRole']) || isValidString(data.borrowerRole, 0, 64))
+        && (!data.keys().hasAny(['borrowerIdNumber']) || isValidString(data.borrowerIdNumber, 0, 100))
+        && (!data.keys().hasAny(['issueDate']) || isValidString(data.issueDate, 0, 64))
+        && (!data.keys().hasAny(['dueDate']) || isValidString(data.dueDate, 0, 64))
+        && (!data.keys().hasAny(['returnDate']) || data.returnDate == null || isValidString(data.returnDate, 0, 64))
+        && isValidString(data.status, 1, 32)
+        && (!data.keys().hasAny(['remarks']) || isValidString(data.remarks, 0, 1000))
+        && isValidString(data.ownerUid, 1, 128)
+        && (!data.keys().hasAny(['updatedAt']) || isValidString(data.updatedAt, 0, 64));
+    }
+
+    function isValidWaitlistRequest(data) {
+      return data.keys().hasAll(['id', 'bookId', 'bookTitle', 'studentName', 'fulfilled', 'ownerUid'])
+        && data.keys().hasOnly(['id', 'bookId', 'bookTitle', 'studentName', 'studentIdNumber', 'requestedAt', 'fulfilled', 'returnedAt', 'ownerUid'])
+        && data.id is number
+        && data.bookId is number
+        && isValidString(data.bookTitle, 1, 500)
+        && isValidString(data.studentName, 1, 200)
+        && (!data.keys().hasAny(['studentIdNumber']) || isValidString(data.studentIdNumber, 0, 100))
+        && (!data.keys().hasAny(['requestedAt']) || isValidString(data.requestedAt, 0, 64))
+        && data.fulfilled is bool
+        && (!data.keys().hasAny(['returnedAt']) || isValidString(data.returnedAt, 0, 64))
+        && isValidString(data.ownerUid, 1, 128);
+    }
+
+    function isValidMemberPublic(data) {
+      return data.keys().hasAll(['id', 'uid', 'fullName', 'role', 'status', 'ownerUid'])
+        && data.keys().hasOnly(['id', 'uid', 'fullName', 'role', 'idNumber', 'gradeOrDepartment', 'status', 'ownerUid', 'updatedAt'])
+        && data.id is number
+        && isValidString(data.uid, 1, 128)
+        && isValidString(data.fullName, 1, 200)
+        && isValidString(data.role, 1, 64)
+        && (!data.keys().hasAny(['idNumber']) || isValidString(data.idNumber, 0, 100))
+        && (!data.keys().hasAny(['gradeOrDepartment']) || isValidString(data.gradeOrDepartment, 0, 200))
+        && isValidString(data.status, 1, 32)
+        && isValidString(data.ownerUid, 1, 128)
+        && (!data.keys().hasAny(['updatedAt']) || isValidString(data.updatedAt, 0, 64));
+    }
+
+    function isValidMemberPrivate(data) {
+      return data.keys().hasAll(['uid', 'email', 'ownerUid'])
+        && data.keys().hasOnly(['uid', 'email', 'ownerUid', 'updatedAt'])
+        && isValidString(data.uid, 1, 128)
+        && isValidString(data.email, 1, 254)
+        && isValidString(data.ownerUid, 1, 128)
+        && (!data.keys().hasAny(['updatedAt']) || isValidString(data.updatedAt, 0, 64));
+    }
+
+    function isValidAssetChunk(data) {
+      return data.keys().hasAll(['assetKey', 'index', 'total', 'data', 'ownerUid'])
+        && data.keys().hasOnly(['assetKey', 'index', 'total', 'data', 'ownerUid', 'updatedAt'])
+        && isValidString(data.assetKey, 1, 128)
+        && data.index is number && data.index >= 0
+        && data.total is number && data.total >= 1
+        && isValidString(data.data, 0, 500000)
+        && isValidString(data.ownerUid, 1, 128)
+        && (!data.keys().hasAny(['updatedAt']) || isValidString(data.updatedAt, 0, 64));
+    }
+
+    match /test/{docId} {
+      allow get: if isValidId(docId);
+    }
+
+    match /admins/{uid} {
+      allow get: if isValidId(uid) && (isAdmin() || (isVerifiedUser() && request.auth.uid == uid));
+      allow list: if false;
+      allow create, update, delete: if isValidId(uid) && isAdmin();
+    }
+
+    match /portal_settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if true;
+      allow create: if isValidId(settingId) && isVerifiedUser() && isValidPortalSettings(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
+      allow update: if isValidId(settingId) && isVerifiedUser() && isValidPortalSettings(incoming()) && incoming().ownerUid == existing().ownerUid
+        && (isAdmin() || existing().ownerUid == request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['portalTitle', 'welcomeHeading', 'welcomeSubtext', 'scheduleBannerText', 'heroImageUrl', 'logoImageUrl', 'updatedAt']);
+      allow delete: if isValidId(settingId) && isAdmin();
+    }
+
+    match /books/{bookId} {
+      allow get: if isValidId(bookId);
+      allow list: if true;
+      allow create: if isValidId(bookId) && isVerifiedUser() && isValidBook(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
+      allow update: if isValidId(bookId) && isVerifiedUser() && isValidBook(incoming()) && incoming().ownerUid == existing().ownerUid
+        && (isAdmin() || existing().ownerUid == request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'author', 'isbn', 'subject', 'category', 'publisher', 'publicationYear', 'shelfLocation', 'totalCopies', 'availableCopies', 'description', 'coverKey', 'updatedAt']);
+      allow delete: if isValidId(bookId) && (isAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid));
+    }
+
+    match /categories/{categoryId} {
+      allow get: if isValidId(categoryId);
+      allow list: if true;
+      allow create: if isValidId(categoryId) && isVerifiedUser() && isValidCategory(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
+      allow update: if isValidId(categoryId) && isVerifiedUser() && isValidCategory(incoming()) && incoming().ownerUid == existing().ownerUid
+        && (isAdmin() || existing().ownerUid == request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'code', 'shelfZone', 'description', 'updatedAt']);
+      allow delete: if isValidId(categoryId) && (isAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid));
+    }
+
+    match /digital_resources/{resourceId} {
+      allow get: if isValidId(resourceId);
+      allow list: if true;
+      allow create: if isValidId(resourceId) && isVerifiedUser() && isValidDigitalResource(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
+      allow update: if isValidId(resourceId) && isVerifiedUser() && isValidDigitalResource(incoming()) && incoming().ownerUid == existing().ownerUid
+        && (isAdmin() || existing().ownerUid == request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'author', 'resourceType', 'subject', 'gradeLevel', 'fileSize', 'pageCount', 'downloadCount', 'summary', 'contentPreview', 'externalUrl', 'uploadedBy', 'updatedAt']);
+      allow delete: if isValidId(resourceId) && (isAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid));
+    }
+
+    match /borrow_records/{recordId} {
+      allow get: if isValidId(recordId);
+      allow list: if true;
+      allow create: if isValidId(recordId) && isVerifiedUser() && isValidBorrowRecord(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
+      allow update: if isValidId(recordId) && isVerifiedUser() && isValidBorrowRecord(incoming()) && incoming().ownerUid == existing().ownerUid
+        && (isAdmin() || existing().ownerUid == request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'returnDate', 'remarks', 'borrowerName', 'borrowerRole', 'borrowerIdNumber', 'issueDate', 'dueDate', 'updatedAt']);
+      allow delete: if isValidId(recordId) && isAdmin();
+    }
+
+    match /waitlist_requests/{requestId} {
+      allow get: if isValidId(requestId);
+      allow list: if true;
+      allow create: if isValidId(requestId) && isVerifiedUser() && isValidWaitlistRequest(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
+      allow update: if isValidId(requestId) && isVerifiedUser() && isValidWaitlistRequest(incoming()) && incoming().ownerUid == existing().ownerUid
+        && (isAdmin() || existing().ownerUid == request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['fulfilled', 'returnedAt', 'studentName']);
+      allow delete: if isValidId(requestId) && (isAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid));
+    }
+
+    match /members_public/{memberId} {
+      allow get: if isValidId(memberId);
+      allow list: if true;
+      allow create: if isValidId(memberId) && isVerifiedUser() && isValidMemberPublic(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
+      allow update: if isValidId(memberId) && isVerifiedUser() && isValidMemberPublic(incoming()) && incoming().ownerUid == existing().ownerUid
+        && (isAdmin() || existing().ownerUid == request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'role', 'idNumber', 'gradeOrDepartment', 'status', 'updatedAt']);
+      allow delete: if isValidId(memberId) && isAdmin();
+    }
+
+    match /members_private/{memberId} {
+      allow get: if isValidId(memberId) && (isAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid));
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && resource.data.ownerUid == request.auth.uid);
+      allow create: if isValidId(memberId) && isVerifiedUser() && isValidMemberPrivate(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
+      allow update: if isValidId(memberId) && isVerifiedUser() && isValidMemberPrivate(incoming()) && incoming().ownerUid == existing().ownerUid
+        && (isAdmin() || existing().ownerUid == request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+      allow delete: if isValidId(memberId) && isAdmin();
+    }
+
+    match /asset_chunks/{chunkId} {
+      allow get: if isValidId(chunkId);
+      allow list: if true;
+      allow create: if isValidId(chunkId) && isVerifiedUser() && isValidAssetChunk(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
+      allow update: if isValidId(chunkId) && isVerifiedUser() && isValidAssetChunk(incoming()) && incoming().ownerUid == existing().ownerUid
+        && (isAdmin() || existing().ownerUid == request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['assetKey', 'index', 'total', 'data', 'updatedAt']);
+      allow delete: if isValidId(chunkId) && (isAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid));
+    }
+  }
+}
