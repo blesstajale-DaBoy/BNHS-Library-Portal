@@ -51,7 +51,6 @@ import {
   BookWaitlistRequest,
   PortalNotification,
 } from './types.ts';
-import { SqlExportModal } from './components/SqlExportModal.tsx';
 import { CategoryDistributionChart } from './components/CategoryDistributionChart.tsx';
 import { StudentMyLibraryView } from './components/StudentMyLibraryView.tsx';
 import {
@@ -465,7 +464,6 @@ function LibraryPortalContent() {
     url: string;
     title: string;
   } | null>(null);
-  const [isSqlModalOpen, setIsSqlModalOpen] = useState(false);
   const [isPortalSettingsOpen, setIsPortalSettingsOpen] = useState(false);
 
   // Edit Modals State
@@ -2607,66 +2605,6 @@ function LibraryPortalContent() {
             </button>
           </div>
         </nav>
-
-        {/* Active Role Switcher & Permissions Card in Sidebar Footer */}
-        <div className="p-4 border-t border-[#D4AF37]/20 bg-[#2D070F]/80 space-y-3">
-          <div>
-            <label
-              htmlFor="role-select"
-              className="block text-[11px] text-[#D4AF37] font-medium mb-1"
-            >
-              Active Portal Role View
-            </label>
-            <select
-              id="role-select"
-              value={safeActiveRole}
-              onChange={(e) => {
-                const nextRole = e.target.value as UserRole;
-                setActiveRole(nextRole);
-                if (
-                  !ROLE_PERMISSIONS[nextRole].canManageBooks &&
-                  (activeModule === 'create' ||
-                    activeModule === 'edit' ||
-                    activeModule === 'delete')
-                ) {
-                  setActiveModule('dashboard');
-                }
-              }}
-              className="w-full rounded-lg bg-[#420B17] border border-[#D4AF37]/40 px-2.5 py-1.5 text-xs font-medium text-white focus:outline-none focus:border-[#D4AF37]"
-            >
-              {USER_ROLE_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-
-            {/* Automatically displays the active logged-in member's name */}
-            <div className="mt-2 rounded-lg bg-[#420B17]/90 border border-[#D4AF37]/35 px-2.5 py-2">
-              <div className="text-[10px] font-semibold text-[#D4AF37] uppercase tracking-wider truncate">
-                Active {safeActiveRole}
-              </div>
-              <div className="text-xs font-bold text-white truncate">
-                {activeRoleUser.fullName}
-              </div>
-              <div className="text-[10px] text-white/75 font-mono truncate">
-                {activeRoleUser.idNumber} · {activeRoleUser.gradeOrDepartment}
-              </div>
-            </div>
-
-            <p className="mt-1.5 text-[11px] text-white/70">
-              Access: {currentPermissions.summary}
-            </p>
-          </div>
-
-          <button
-            onClick={() => setIsSqlModalOpen(true)}
-            className="w-full flex items-center justify-center gap-2 rounded-lg border border-[#D4AF37]/40 bg-[#420B17] px-3 py-2 text-xs font-medium text-[#D4AF37] hover:bg-[#52101f] transition-colors whitespace-nowrap shrink-0"
-          >
-            <Database className="h-3.5 w-3.5 shrink-0" />
-            <span>SQL Schema & XAMPP Export</span>
-          </button>
-        </div>
       </aside>
 
       {/* Main Content Area — Deep Maroon (#641526) */}
@@ -4114,13 +4052,6 @@ function LibraryPortalContent() {
                 </div>
                 <div className="flex items-center gap-2.5">
                   <button
-                    onClick={() => setIsSqlModalOpen(true)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-[#D4AF37]/50 bg-[#3A0A14] px-3.5 py-2 text-xs font-semibold text-[#D4AF37] hover:bg-[#2b060e] transition-colors whitespace-nowrap shrink-0"
-                  >
-                    <Database className="h-3.5 w-3.5" />
-                    Export SQL Database
-                  </button>
-                  <button
                     onClick={handleExportCsvReport}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-[#D4AF37] px-4 py-2 text-xs font-bold text-[#3A0A14] hover:bg-[#e5c247] transition-colors whitespace-nowrap shrink-0"
                   >
@@ -5138,17 +5069,6 @@ function LibraryPortalContent() {
         imageUrl={lightboxImagePreview?.url || null}
         title={lightboxImagePreview?.title || 'Image Preview'}
         onClose={() => setLightboxImagePreview(null)}
-      />
-
-      {/* ====================================================================
-          MODAL 6: SQL & XAMPP SCHEMA EXPORT
-         ==================================================================== */}
-      <SqlExportModal
-        isOpen={isSqlModalOpen}
-        onClose={() => setIsSqlModalOpen(false)}
-        books={books}
-        categories={categories}
-        digitalResources={digitalResources}
       />
 
       {/* ====================================================================
