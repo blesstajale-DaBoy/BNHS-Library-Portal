@@ -185,9 +185,9 @@ service cloud.firestore {
     match /portal_settings/{settingId} {
       allow get: if isValidId(settingId);
       allow list: if true;
-      allow create: if isValidId(settingId) && isVerifiedUser() && isValidPortalSettings(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
-      allow update: if isValidId(settingId) && isVerifiedUser() && isValidPortalSettings(incoming()) && incoming().ownerUid == existing().ownerUid
-        && (isAdmin() || existing().ownerUid == request.auth.uid)
+      allow create: if isValidId(settingId) && isValidPortalSettings(incoming());
+      allow update: if isValidId(settingId) && isValidPortalSettings(incoming())
+        && incoming().ownerUid == existing().ownerUid
         && incoming().diff(existing()).affectedKeys().hasOnly(['portalTitle', 'welcomeHeading', 'welcomeSubtext', 'scheduleBannerText', 'heroImageUrl', 'logoImageUrl', 'updatedAt']);
       allow delete: if isValidId(settingId) && isAdmin();
     }
@@ -195,61 +195,61 @@ service cloud.firestore {
     match /books/{bookId} {
       allow get: if isValidId(bookId);
       allow list: if true;
-      allow create: if isValidId(bookId) && isVerifiedUser() && isValidBook(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
-      allow update: if isValidId(bookId) && isVerifiedUser() && isValidBook(incoming()) && incoming().ownerUid == existing().ownerUid
-        && (isAdmin() || existing().ownerUid == request.auth.uid)
+      allow create: if isValidId(bookId) && isValidBook(incoming());
+      allow update: if isValidId(bookId) && isValidBook(incoming())
+        && incoming().ownerUid == existing().ownerUid
         && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'author', 'isbn', 'subject', 'category', 'publisher', 'publicationYear', 'shelfLocation', 'totalCopies', 'availableCopies', 'description', 'coverKey', 'updatedAt']);
-      allow delete: if isValidId(bookId) && (isAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid));
+      allow delete: if isValidId(bookId);
     }
 
     match /categories/{categoryId} {
       allow get: if isValidId(categoryId);
       allow list: if true;
-      allow create: if isValidId(categoryId) && isVerifiedUser() && isValidCategory(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
-      allow update: if isValidId(categoryId) && isVerifiedUser() && isValidCategory(incoming()) && incoming().ownerUid == existing().ownerUid
-        && (isAdmin() || existing().ownerUid == request.auth.uid)
+      allow create: if isValidId(categoryId) && isValidCategory(incoming());
+      allow update: if isValidId(categoryId) && isValidCategory(incoming())
+        && incoming().ownerUid == existing().ownerUid
         && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'code', 'shelfZone', 'description', 'updatedAt']);
-      allow delete: if isValidId(categoryId) && (isAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid));
+      allow delete: if isValidId(categoryId);
     }
 
     match /digital_resources/{resourceId} {
       allow get: if isValidId(resourceId);
       allow list: if true;
-      allow create: if isValidId(resourceId) && isVerifiedUser() && isValidDigitalResource(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
-      allow update: if isValidId(resourceId) && isVerifiedUser() && isValidDigitalResource(incoming()) && incoming().ownerUid == existing().ownerUid
-        && (isAdmin() || existing().ownerUid == request.auth.uid)
+      allow create: if isValidId(resourceId) && isValidDigitalResource(incoming());
+      allow update: if isValidId(resourceId) && isValidDigitalResource(incoming())
+        && incoming().ownerUid == existing().ownerUid
         && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'author', 'resourceType', 'subject', 'gradeLevel', 'fileSize', 'pageCount', 'downloadCount', 'summary', 'contentPreview', 'externalUrl', 'uploadedBy', 'updatedAt']);
-      allow delete: if isValidId(resourceId) && (isAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid));
+      allow delete: if isValidId(resourceId);
     }
 
     match /borrow_records/{recordId} {
       allow get: if isValidId(recordId);
       allow list: if true;
-      allow create: if isValidId(recordId) && isVerifiedUser() && isValidBorrowRecord(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
-      allow update: if isValidId(recordId) && isVerifiedUser() && isValidBorrowRecord(incoming()) && incoming().ownerUid == existing().ownerUid
-        && (isAdmin() || existing().ownerUid == request.auth.uid)
+      allow create: if isValidId(recordId) && isValidBorrowRecord(incoming());
+      allow update: if isValidId(recordId) && isValidBorrowRecord(incoming())
+        && incoming().ownerUid == existing().ownerUid
         && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'returnDate', 'remarks', 'borrowerName', 'borrowerRole', 'borrowerIdNumber', 'issueDate', 'dueDate', 'updatedAt']);
-      allow delete: if isValidId(recordId) && isAdmin();
+      allow delete: if isValidId(recordId);
     }
 
     match /waitlist_requests/{requestId} {
       allow get: if isValidId(requestId);
       allow list: if true;
-      allow create: if isValidId(requestId) && isVerifiedUser() && isValidWaitlistRequest(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
-      allow update: if isValidId(requestId) && isVerifiedUser() && isValidWaitlistRequest(incoming()) && incoming().ownerUid == existing().ownerUid
-        && (isAdmin() || existing().ownerUid == request.auth.uid)
+      allow create: if isValidId(requestId) && isValidWaitlistRequest(incoming());
+      allow update: if isValidId(requestId) && isValidWaitlistRequest(incoming())
+        && incoming().ownerUid == existing().ownerUid
         && incoming().diff(existing()).affectedKeys().hasOnly(['fulfilled', 'returnedAt', 'studentName']);
-      allow delete: if isValidId(requestId) && (isAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid));
+      allow delete: if isValidId(requestId);
     }
 
     match /members_public/{memberId} {
       allow get: if isValidId(memberId);
       allow list: if true;
-      allow create: if isValidId(memberId) && isVerifiedUser() && isValidMemberPublic(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
-      allow update: if isValidId(memberId) && isVerifiedUser() && isValidMemberPublic(incoming()) && incoming().ownerUid == existing().ownerUid
-        && (isAdmin() || existing().ownerUid == request.auth.uid)
+      allow create: if isValidId(memberId) && isValidMemberPublic(incoming());
+      allow update: if isValidId(memberId) && isValidMemberPublic(incoming())
+        && incoming().ownerUid == existing().ownerUid
         && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'role', 'idNumber', 'gradeOrDepartment', 'status', 'updatedAt']);
-      allow delete: if isValidId(memberId) && isAdmin();
+      allow delete: if isValidId(memberId);
     }
 
     match /members_private/{memberId} {
@@ -265,11 +265,11 @@ service cloud.firestore {
     match /asset_chunks/{chunkId} {
       allow get: if isValidId(chunkId);
       allow list: if true;
-      allow create: if isValidId(chunkId) && isVerifiedUser() && isValidAssetChunk(incoming()) && (isAdmin() || incoming().ownerUid == request.auth.uid);
-      allow update: if isValidId(chunkId) && isVerifiedUser() && isValidAssetChunk(incoming()) && incoming().ownerUid == existing().ownerUid
-        && (isAdmin() || existing().ownerUid == request.auth.uid)
+      allow create: if isValidId(chunkId) && isValidAssetChunk(incoming());
+      allow update: if isValidId(chunkId) && isValidAssetChunk(incoming())
+        && incoming().ownerUid == existing().ownerUid
         && incoming().diff(existing()).affectedKeys().hasOnly(['assetKey', 'index', 'total', 'data', 'updatedAt']);
-      allow delete: if isValidId(chunkId) && (isAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid));
+      allow delete: if isValidId(chunkId);
     }
   }
 }

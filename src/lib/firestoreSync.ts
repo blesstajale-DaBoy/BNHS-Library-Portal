@@ -18,6 +18,7 @@ import {
   LibraryUser,
   PortalSettings,
   UserRole,
+  normalizeUserRole,
 } from '../types.ts';
 
 export enum OperationType {
@@ -77,17 +78,52 @@ const ASSET_CHUNK_SIZE = 300000;
 const INLINE_THRESHOLD = 220000;
 const TEXT_INLINE_THRESHOLD = 120000;
 
+const PORTAL_AUTOSYNC_UID = 'bnhs-portal-autosync';
 const ownerUidCache = new Map<string, string>();
+const memberUidCache = new Map<string, string>();
 const chunkResolutionCache = new Map<string, string>();
 
-function getVerifiedUid(): string | null {
+function getSyncWriterUid(): string {
+  return auth.currentUser?.uid || PORTAL_AUTOSYNC_UID;
+}
+
+function isVerifiedAdminAuth(): boolean {
   const u = auth.currentUser;
-  if (!u || !u.emailVerified) return null;
-  return u.uid;
+  return Boolean(
+    u &&
+      u.emailVerified &&
+      u.email?.toLowerCase() === 'blesstajale@gmail.com'
+  );
 }
 
 function getEffectiveOwnerUid(docKey: string, fallbackUid: string): string {
   return ownerUidCache.get(docKey) || fallbackUid;
+}
+
+async function resolveOwnerUidForDoc(
+  collectionName: string,
+  docId: string,
+  fallbackUid: string
+): Promise<string> {
+  const docKey = `${collectionName}/${docId}`;
+  const cached = ownerUidCache.get(docKey);
+  if (cached) return cached;
+  try {
+    const snap = await getDoc(doc(db, collectionName, docId));
+    if (snap.exists()) {
+      const d = snap.data();
+      if (collectionName === 'members_public' && typeof d.uid === 'string' && d.uid) {
+        memberUidCache.set(docId, d.uid);
+      }
+      if (typeof d.ownerUid === 'string' && d.ownerUid) {
+        ownerUidCache.set(docKey, d.ownerUid);
+        return d.ownerUid;
+      }
+    }
+  } catch {
+    // Fall back to writer UID if lookup fails
+  }
+  return fallbackUid;
 }
 
 function sanitizeId(raw: string | number): string {
@@ -197,16 +233,16 @@ async function decodePossiblyChunkedString(value: unknown): Promise<string> {
 }
 
 export function isVerifiedFirebaseSyncReady(): boolean {
-  return Boolean(getVerifiedUid());
+  // Automatic Cloud Sync works immediately without requiring Google Sign-In
+  return true;
 }
 
 export async function syncPortalSettingsToFirestore(
   settings: PortalSettings
 ): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
+  const uid = getSyncWriterUid();
   const path = 'portal_settings/main';
-  const ownerUid = getEffectiveOwnerUid(path, uid);
+  const ownerUid = await resolveOwnerUidForDoc('portal_settings', 'main', uid);
   const heroEncoded = await encodePossiblyLargeString(
     settings.heroImageUrl || '',
     'portal_hero_banner',
@@ -250,11 +286,10 @@ export async function syncPortalSettingsToFirestore(
 }
 
 export async function syncBookToFirestore(book: BookItem): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
+  const uid = getSyncWriterUid();
   const docId = sanitizeId(book.id);
   const path = `books/${docId}`;
-  const ownerUid = getEffectiveOwnerUid(path, uid);
+  const ownerUid = await resolveOwnerUidForDoc('books', docId, uid);
   const coverEncoded = await encodePossiblyLargeString(
     book.coverKey || 'history',
     `book_cover_${docId}`,
@@ -288,12 +323,11 @@ export async function syncBookToFirestore(book: BookItem): Promise<boolean> {
 }
 
 export async function deleteBookFromFirestore(bookId: number): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
   const docId = sanitizeId(bookId);
   const path = `books/${docId}`;
   try {
     await deleteDoc(doc(db, 'books', docId));
+    ownerUidCache.delete(path);
     return true;
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
@@ -303,11 +337,10 @@ export async function deleteBookFromFirestore(bookId: number): Promise<boolean> 
 export async function syncCategoryToFirestore(
   cat: BookCategory
 ): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
+  const uid = getSyncWriterUid();
   const docId = sanitizeId(cat.id);
   const path = `categories/${docId}`;
-  const ownerUid = getEffectiveOwnerUid(path, uid);
+  const ownerUid = await resolveOwnerUidForDoc('categories', docId, uid);
   const payload = {
     id: Number(cat.id),
     name: clampString(cat.name || 'Category', 200),
@@ -329,12 +362,11 @@ export async function syncCategoryToFirestore(
 export async function deleteCategoryFromFirestore(
   categoryId: number
 ): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
   const docId = sanitizeId(categoryId);
   const path = `categories/${docId}`;
   try {
     await deleteDoc(doc(db, 'categories', docId));
+    ownerUidCache.delete(path);
     return true;
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
@@ -344,11 +376,10 @@ export async function deleteCategoryFromFirestore(
 export async function syncDigitalResourceToFirestore(
   resItem: DigitalResource
 ): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
+  const uid = getSyncWriterUid();
   const docId = sanitizeId(resItem.id);
   const path = `digital_resources/${docId}`;
-  const ownerUid = getEffectiveOwnerUid(path, uid);
+  const ownerUid = await resolveOwnerUidForDoc('digital_resources', docId, uid);
   const urlEncoded = await encodePossiblyLargeString(
     resItem.externalUrl || '',
     `digital_file_${docId}`,
@@ -390,12 +421,11 @@ export async function syncDigitalResourceToFirestore(
 export async function deleteDigitalResourceFromFirestore(
   resourceId: number
 ): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
   const docId = sanitizeId(resourceId);
   const path = `digital_resources/${docId}`;
   try {
     await deleteDoc(doc(db, 'digital_resources', docId));
+    ownerUidCache.delete(path);
     return true;
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
@@ -405,11 +435,10 @@ export async function deleteDigitalResourceFromFirestore(
 export async function syncBorrowRecordToFirestore(
   rec: BorrowRecord
 ): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
+  const uid = getSyncWriterUid();
   const docId = sanitizeId(rec.id);
   const path = `borrow_records/${docId}`;
-  const ownerUid = getEffectiveOwnerUid(path, uid);
+  const ownerUid = await resolveOwnerUidForDoc('borrow_records', docId, uid);
   const payload = {
     id: Number(rec.id),
     transactionCode: clampString(rec.transactionCode || `TXN-${docId}`, 100),
@@ -438,11 +467,10 @@ export async function syncBorrowRecordToFirestore(
 export async function syncWaitlistRequestToFirestore(
   item: BookWaitlistRequest
 ): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
+  const uid = getSyncWriterUid();
   const docId = sanitizeId(item.id);
   const path = `waitlist_requests/${docId}`;
-  const ownerUid = getEffectiveOwnerUid(path, uid);
+  const ownerUid = await resolveOwnerUidForDoc('waitlist_requests', docId, uid);
   const payload = {
     id: Number(item.id),
     bookId: Number(item.bookId),
@@ -464,20 +492,20 @@ export async function syncWaitlistRequestToFirestore(
 }
 
 export async function syncUserToFirestore(user: LibraryUser): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
+  const uid = getSyncWriterUid();
   const docId = sanitizeId(user.id);
   const publicPath = `members_public/${docId}`;
-  const privatePath = `members_private/${docId}`;
-  const publicOwner = getEffectiveOwnerUid(publicPath, uid);
-  const privateOwner = getEffectiveOwnerUid(privatePath, uid);
+  const publicOwner = await resolveOwnerUidForDoc('members_public', docId, uid);
   const nowIso = new Date().toISOString();
+  const stableMemberUid =
+    memberUidCache.get(docId) ||
+    clampString(user.uid || `bnhs-member-${docId}`, 128);
 
   const publicPayload = {
     id: Number(user.id),
-    uid: clampString(user.uid || `bnhs-member-${docId}`, 128),
+    uid: stableMemberUid,
     fullName: clampString(user.fullName || 'BNHS Member', 200),
-    role: clampString(user.role || 'Student', 64),
+    role: clampString(normalizeUserRole(user.role), 64),
     idNumber: clampString(user.idNumber || '', 100),
     gradeOrDepartment: clampString(user.gradeOrDepartment || '', 200),
     status: clampString(user.status || 'Active', 32),
@@ -485,42 +513,50 @@ export async function syncUserToFirestore(user: LibraryUser): Promise<boolean> {
     updatedAt: nowIso,
   };
 
-  const privatePayload = {
-    uid: publicPayload.uid,
-    email: clampString(user.email || 'member@bnhs.edu.ph', 254),
-    ownerUid: privateOwner,
-    updatedAt: nowIso,
-  };
-
   try {
     await setDoc(doc(db, 'members_public', docId), publicPayload);
     ownerUidCache.set(publicPath, publicOwner);
+    memberUidCache.set(docId, stableMemberUid);
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, publicPath);
   }
 
-  try {
-    await setDoc(doc(db, 'members_private', docId), privatePayload);
-    ownerUidCache.set(privatePath, privateOwner);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, privatePath);
+  // Keep private PII emails isolated behind verified admin authentication
+  if (isVerifiedAdminAuth()) {
+    const privatePath = `members_private/${docId}`;
+    const privateOwner = getEffectiveOwnerUid(privatePath, uid);
+    const privatePayload = {
+      uid: stableMemberUid,
+      email: clampString(user.email || 'member@bnhs.edu.ph', 254),
+      ownerUid: privateOwner,
+      updatedAt: nowIso,
+    };
+    try {
+      await setDoc(doc(db, 'members_private', docId), privatePayload);
+      ownerUidCache.set(privatePath, privateOwner);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, privatePath);
+    }
   }
   return true;
 }
 
 export async function deleteUserFromFirestore(userId: number): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
   const docId = sanitizeId(userId);
   try {
     await deleteDoc(doc(db, 'members_public', docId));
+    ownerUidCache.delete(`members_public/${docId}`);
+    memberUidCache.delete(docId);
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `members_public/${docId}`);
   }
-  try {
-    await deleteDoc(doc(db, 'members_private', docId));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `members_private/${docId}`);
+  if (isVerifiedAdminAuth()) {
+    try {
+      await deleteDoc(doc(db, 'members_private', docId));
+      ownerUidCache.delete(`members_private/${docId}`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `members_private/${docId}`);
+    }
   }
   return true;
 }
@@ -534,8 +570,6 @@ export async function seedOrPushAllToFirestore(state: {
   waitlistRequests: BookWaitlistRequest[];
   users: LibraryUser[];
 }, forceOverwriteAll = false): Promise<boolean> {
-  const uid = getVerifiedUid();
-  if (!uid) return false;
 
   if (!forceOverwriteAll) {
     try {
@@ -812,12 +846,15 @@ export function subscribeToSharedPortalFirestore(
           if (typeof d.ownerUid === 'string') {
             ownerUidCache.set(`members_public/${docSnap.id}`, d.ownerUid);
           }
+          if (typeof d.uid === 'string' && d.uid) {
+            memberUidCache.set(docSnap.id, d.uid);
+          }
           return {
             id: Number(d.id),
             uid: String(d.uid || ''),
             email: privateEmailById.get(docSnap.id) || 'member@bnhs.edu.ph',
             fullName: String(d.fullName || ''),
-            role: (d.role || 'Student') as UserRole,
+            role: normalizeUserRole(d.role) as UserRole,
             idNumber: String(d.idNumber || ''),
             gradeOrDepartment: String(d.gradeOrDepartment || ''),
             status: String(d.status || 'Active'),

@@ -81,6 +81,74 @@ export async function getOrCreateUser(
 }
 
 export async function ensureInitialLibrarySeed() {
+  // One-time migration: convert legacy 'Librarian' rows to 'School Librarian' and seed Assistant School Librarian & Librarian Support Staff accounts
+  try {
+    const [migratedFlag] = await db
+      .select()
+      .from(portalSyncState)
+      .where(eq(portalSyncState.stateKey, 'seeded_library_staff_roles_v2'))
+      .limit(1);
+
+    if (!migratedFlag) {
+      await db
+        .update(users)
+        .set({ role: 'School Librarian' })
+        .where(eq(users.role, 'Librarian'));
+
+      await db
+        .insert(users)
+        .values([
+          {
+            uid: 'bnhs-staff-asst-librarian-01',
+            email: 'grace.bautista@bnhs.edu.ph',
+            fullName: 'Ms. Grace M. Bautista, RL',
+            role: 'Assistant School Librarian',
+            idNumber: 'ALIB-2021-0024',
+            gradeOrDepartment: 'Cataloging & Circulation Desk',
+            status: 'Active',
+          },
+          {
+            uid: 'bnhs-staff-asst-librarian-02',
+            email: 'carlo.sarmiento@bnhs.edu.ph',
+            fullName: 'Mr. Carlo D. Sarmiento',
+            role: 'Assistant School Librarian',
+            idNumber: 'ALIB-2022-0031',
+            gradeOrDepartment: 'Digital Library & E-Resources Section',
+            status: 'Active',
+          },
+          {
+            uid: 'bnhs-staff-lib-support-01',
+            email: 'joyce.tagupa@bnhs.edu.ph',
+            fullName: 'Ms. Joyce Ann P. Tagupa',
+            role: 'Librarian Support Staff',
+            idNumber: 'LSS-2023-0041',
+            gradeOrDepartment: 'Book Shelving & Borrowing Counter',
+            status: 'Active',
+          },
+          {
+            uid: 'bnhs-staff-lib-support-02',
+            email: 'mark.alvarez@bnhs.edu.ph',
+            fullName: 'Mr. Mark Lester B. Alvarez',
+            role: 'Librarian Support Staff',
+            idNumber: 'LSS-2024-0049',
+            gradeOrDepartment: 'Reading Hall & Archival Support',
+            status: 'Active',
+          },
+        ])
+        .onConflictDoNothing();
+
+      await db
+        .insert(portalSyncState)
+        .values({
+          stateKey: 'seeded_library_staff_roles_v2',
+          stateJson: 'true',
+        })
+        .onConflictDoNothing();
+    }
+  } catch (error) {
+    console.error('Failed to migrate/seed library staff roles:', error);
+  }
+
   try {
     const existingBooks = await db.select().from(books);
     if (existingBooks.length > 0) {
@@ -295,12 +363,30 @@ export async function ensureInitialLibrarySeed() {
       .insert(users)
       .values([
         {
-          uid: 'bnhs-staff-librarian-01',
+          uid: 'bnhs-staff-school-librarian-01',
           email: 'm.delacruz.librarian@bnhs.edu.ph',
           fullName: 'Mrs. Marites R. Dela Cruz, RL',
-          role: 'Librarian',
+          role: 'School Librarian',
           idNumber: 'BNHS-LIB-0102',
           gradeOrDepartment: 'Head School Librarian',
+          status: 'Active',
+        },
+        {
+          uid: 'bnhs-staff-asst-librarian-01',
+          email: 'grace.bautista@bnhs.edu.ph',
+          fullName: 'Ms. Grace M. Bautista, RL',
+          role: 'Assistant School Librarian',
+          idNumber: 'ALIB-2021-0024',
+          gradeOrDepartment: 'Cataloging & Circulation Desk',
+          status: 'Active',
+        },
+        {
+          uid: 'bnhs-staff-lib-support-01',
+          email: 'joyce.tagupa@bnhs.edu.ph',
+          fullName: 'Ms. Joyce Ann P. Tagupa',
+          role: 'Librarian Support Staff',
+          idNumber: 'LSS-2023-0041',
+          gradeOrDepartment: 'Book Shelving & Borrowing Counter',
           status: 'Active',
         },
         {
@@ -580,6 +666,11 @@ export async function getLibraryOverviewData() {
     ).length;
     const overdueCount = allBorrows.filter((r) => r.status === 'Overdue').length;
 
+    const normalizedUsers = allUsers.map((u) => ({
+      ...u,
+      role: u.role === 'Librarian' ? 'School Librarian' : u.role,
+    }));
+
     return {
       stats: {
         totalTitles,
@@ -588,13 +679,13 @@ export async function getLibraryOverviewData() {
         activeBorrowedCount,
         overdueCount,
         digitalResourcesCount: allDigital.length,
-        totalUsersCount: allUsers.length,
+        totalUsersCount: normalizedUsers.length,
       },
       books: allBooks,
       borrowRecords: allBorrows,
       digitalResources: allDigital,
       categories: allCategories,
-      users: allUsers,
+      users: normalizedUsers,
     };
   } catch (error) {
     console.error('Database query failed in getLibraryOverviewData:', error);

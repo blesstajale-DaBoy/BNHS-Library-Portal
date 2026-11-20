@@ -45,6 +45,8 @@ import {
   LibraryUser,
   LibraryStats,
   UserRole,
+  USER_ROLE_OPTIONS,
+  normalizeUserRole,
   PortalSettings,
   BookWaitlistRequest,
   PortalNotification,
@@ -58,8 +60,9 @@ import {
   EditDigitalResourceModal,
   EditUserModal,
   EditCategoryModal,
-  GoogleSignInModal,
 } from './components/PortalEditModals.tsx';
+import { FluorescentBulbLoginModal } from './components/FluorescentBulbLoginModal.tsx';
+import { ConsolidatedCrudHub } from './components/ConsolidatedCrudHub.tsx';
 import {
   DigitalResourcePreviewModal,
   ImageLightboxPreviewModal,
@@ -84,7 +87,7 @@ import {
   resolvePortalAssetUrl,
 } from './data/bnhsInitialData.ts';
 import {
-  isVerifiedFirebaseSyncReady,
+  checkFirestoreSeeded,
   seedOrPushAllToFirestore,
   subscribeToSharedPortalFirestore,
   syncBookToFirestore,
@@ -106,7 +109,10 @@ type PortalModule =
   | 'borrowing'
   | 'digital'
   | 'management'
-  | 'reports';
+  | 'reports'
+  | 'create'
+  | 'edit'
+  | 'delete';
 
 const DEFAULT_HERO_IMAGE_PATH = BUNDLED_ASSETS.heroBanner;
 const DEFAULT_CREST_ANIMATED_GIF_PATH = BUNDLED_ASSETS.logoAnimatedGif;
@@ -125,28 +131,42 @@ const ROLE_PERMISSIONS: Record<
   }
 > = {
   Administrator: {
-    summary: 'Full system management',
+    summary: 'Full Access',
     canManageBooks: true,
     canProcessReturns: true,
     canManageUsers: true,
     canUploadDigital: true,
   },
-  Librarian: {
-    summary: 'Books, borrowers, transactions, users, reports',
+  'School Librarian': {
+    summary: 'Full Access, Circulations & Books',
+    canManageBooks: true,
+    canProcessReturns: true,
+    canManageUsers: true,
+    canUploadDigital: true,
+  },
+  'Assistant School Librarian': {
+    summary: 'Full Access, Circulations & Books',
+    canManageBooks: true,
+    canProcessReturns: true,
+    canManageUsers: true,
+    canUploadDigital: true,
+  },
+  'Librarian Support Staff': {
+    summary: 'Full Access, Circulations & Books',
     canManageBooks: true,
     canProcessReturns: true,
     canManageUsers: true,
     canUploadDigital: true,
   },
   Teacher: {
-    summary: 'Search, borrow, digital resources',
+    summary: 'Faculty Access — Search, borrow, digital resources',
     canManageBooks: false,
     canProcessReturns: false,
     canManageUsers: false,
     canUploadDigital: true,
   },
   Student: {
-    summary: 'Search, borrow, view borrowing history',
+    summary: "'My Library' View — Search, borrow, view history",
     canManageBooks: false,
     canProcessReturns: false,
     canManageUsers: false,
@@ -352,9 +372,8 @@ function LibraryPortalContent() {
     activeRole,
     setActiveRole,
     isSignInModalOpen,
+    openSignInModal,
     closeSignInModal,
-    signInWithGoogle,
-    signInWithGooglePopup,
     signInWithPortalAccount,
     signOut,
     getAuthHeaders,
@@ -548,7 +567,6 @@ function LibraryPortalContent() {
     'Cloud Synced (Auto-Saved)'
   );
   const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
-  const [needsGoogleLiveSync, setNeedsGoogleLiveSync] = useState<boolean>(false);
   const isPushingCloudRef = useRef(false);
   const hasHydratedInitialRef = useRef(false);
   const hasFirestoreLiveUpdateRef = useRef(false);
@@ -592,19 +610,12 @@ function LibraryPortalContent() {
   };
 
   const queueOrSyncFirestore = async (task: () => Promise<unknown>) => {
-    if (!isVerifiedFirebaseSyncReady()) {
-      pendingLocalFirestoreSyncRef.current = true;
-      setNeedsGoogleLiveSync(true);
-      return;
-    }
     try {
       await task();
       pendingLocalFirestoreSyncRef.current = false;
-      setNeedsGoogleLiveSync(false);
       markCloudSyncedAutoSaved();
     } catch (err) {
       pendingLocalFirestoreSyncRef.current = true;
-      setNeedsGoogleLiveSync(true);
       console.error('Shared Firestore sync error:', err);
     }
   };
@@ -654,7 +665,11 @@ function LibraryPortalContent() {
         setCategories(data.categories);
       }
       if (Array.isArray(data.users)) {
-        setUsers(data.users);
+        const normalizedIncomingUsers = data.users.map((u: LibraryUser) => ({
+          ...u,
+          role: normalizeUserRole(u.role),
+        }));
+        setUsers(normalizedIncomingUsers);
         try {
           localStorage.removeItem(USER_EDITS_STORAGE_KEY);
           localStorage.removeItem(USER_DELETED_STORAGE_KEY);
@@ -743,9 +758,7 @@ function LibraryPortalContent() {
       if (!silent) {
         showToast(
           'success',
-          isVerifiedFirebaseSyncReady()
-            ? 'Cloud Synced (Auto-Saved) — live in both Preview and Published across all browsers.'
-            : 'Saved locally & to SQL. Connect Google Live Sync in the top bar to mirror across other browsers.'
+          'Cloud Synced (Auto-Saved) — live in both Preview and Published across all browsers.'
         );
       }
     } catch {
@@ -763,26 +776,15 @@ function LibraryPortalContent() {
   };
 
   const handleManualCloudSync = async () => {
-    if (!isVerifiedFirebaseSyncReady()) {
-      await pushAutoCloudSync(portalSettings, digitalResources, true);
-      const signedIn = await signInWithGooglePopup();
-      if (!signedIn) {
-        showToast(
-          'success',
-          'Saved locally. Sign in with Google to push Preview edits to Live Published across all browsers.'
-        );
-      }
-      return;
-    }
     setIsCloudSyncing(true);
     try {
+      await pushAutoCloudSync(portalSettings, digitalResources, true);
       await seedOrPushAllToFirestore(latestPortalStateRef.current, true);
       pendingLocalFirestoreSyncRef.current = false;
-      setNeedsGoogleLiveSync(false);
       markCloudSyncedAutoSaved();
       showToast(
         'success',
-        'Cloud Synced (Auto-Saved) — all files, books, users, borrowers, and portal settings are synced live across Preview & Published.'
+        'Cloud Synced (Auto-Saved) — all files, books, users, borrowers, and portal settings are synced live across Preview & Published without Google Sign-In.'
       );
     } catch {
       showToast('error', 'Failed to complete Live Cloud Sync. Please try again.');
@@ -803,7 +805,7 @@ function LibraryPortalContent() {
     }
   }, [digitalForm]);
 
-  // Automatic debounced Cloud Sync whenever user edits portalSettings, digitalResources, or waitlistRequests
+  // Automatic debounced Cloud Auto-Sync whenever ANY portal preview data changes
   useEffect(() => {
     if (!hasHydratedInitialRef.current) return;
     if (skipNextAutoSyncRef.current) {
@@ -812,9 +814,46 @@ function LibraryPortalContent() {
     }
     const timer = window.setTimeout(() => {
       void pushAutoCloudSync(portalSettings, digitalResources, true);
-    }, 800);
+    }, 600);
     return () => window.clearTimeout(timer);
-  }, [portalSettings, digitalResources, waitlistRequests]);
+  }, [
+    portalSettings,
+    digitalResources,
+    waitlistRequests,
+    books,
+    categories,
+    users,
+    borrowRecords,
+  ]);
+
+  // Flush any pending preview edits on page hide / close via sendBeacon so auto-sync never loses changes
+  useEffect(() => {
+    const flushSync = () => {
+      if (!hasHydratedInitialRef.current) return;
+      try {
+        const snapshot = latestPortalStateRef.current;
+        const payload = JSON.stringify({
+          portalSettings: snapshot.portalSettings,
+          digitalResources: snapshot.digitalResources,
+          waitlistRequests: snapshot.waitlistRequests,
+        });
+        if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+          navigator.sendBeacon(
+            '/api/cloud-sync',
+            new Blob([payload], { type: 'application/json' })
+          );
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('pagehide', flushSync);
+    window.addEventListener('beforeunload', flushSync);
+    return () => {
+      window.removeEventListener('pagehide', flushSync);
+      window.removeEventListener('beforeunload', flushSync);
+    };
+  }, []);
 
   // Automatic debounced Cloud Sync when editing an existing member inside the inline Users & Permissions panel
   useEffect(() => {
@@ -878,10 +917,12 @@ function LibraryPortalContent() {
       },
       onBooks: (remoteBooks) => {
         hasFirestoreLiveUpdateRef.current = true;
+        skipNextAutoSyncRef.current = true;
         setBooks(remoteBooks);
       },
       onCategories: (remoteCategories) => {
         hasFirestoreLiveUpdateRef.current = true;
+        skipNextAutoSyncRef.current = true;
         setCategories(remoteCategories);
       },
       onDigitalResources: (remoteResources) => {
@@ -892,6 +933,7 @@ function LibraryPortalContent() {
       },
       onBorrowRecords: (remoteBorrows) => {
         hasFirestoreLiveUpdateRef.current = true;
+        skipNextAutoSyncRef.current = true;
         setBorrowRecords(remoteBorrows);
       },
       onWaitlistRequests: (remoteWaitlist) => {
@@ -901,6 +943,7 @@ function LibraryPortalContent() {
       },
       onUsers: (remoteUsers) => {
         hasFirestoreLiveUpdateRef.current = true;
+        skipNextAutoSyncRef.current = true;
         setUsers(remoteUsers);
       },
       onRemoteSyncActivity: () => {
@@ -933,41 +976,38 @@ function LibraryPortalContent() {
     };
   }, []);
 
-  // Automatically seed/push Preview state to shared Firestore when signed in with Google
+  // Automatically seed shared Firestore on startup if not yet initialized (no Google Sign-In required)
   useEffect(() => {
-    if (!firebaseUser || !firebaseUser.emailVerified) return;
     let cancelled = false;
-    const syncOnAuth = async () => {
-      const shouldForcePush = pendingLocalFirestoreSyncRef.current;
+    const ensureInitialFirestoreSeed = async () => {
       try {
-        const pushed = await seedOrPushAllToFirestore(
-          latestPortalStateRef.current,
-          shouldForcePush
-        );
+        const seeded = await checkFirestoreSeeded();
         if (cancelled) return;
-        pendingLocalFirestoreSyncRef.current = false;
-        setNeedsGoogleLiveSync(false);
-        markCloudSyncedAutoSaved();
-        if (pushed) {
-          showToast(
-            'success',
-            'Google Live Sync Connected — Preview & Live Published are now synced in real time across all browsers!'
+        if (!seeded || pendingLocalFirestoreSyncRef.current) {
+          await seedOrPushAllToFirestore(
+            latestPortalStateRef.current,
+            pendingLocalFirestoreSyncRef.current
           );
+          if (cancelled) return;
+          pendingLocalFirestoreSyncRef.current = false;
+          markCloudSyncedAutoSaved();
         }
       } catch (err) {
-        console.error('Initial Firestore seed failed:', err);
+        console.error('Automatic Firestore initial sync check failed:', err);
       }
     };
     const timer = window.setTimeout(() => {
-      void syncOnAuth();
-    }, 350);
+      void ensureInitialFirestoreSeed();
+    }, 900);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [firebaseUser?.uid, firebaseUser?.emailVerified]);
+  }, []);
 
-  const currentPermissions = ROLE_PERMISSIONS[activeRole];
+  const safeActiveRole: UserRole = normalizeUserRole(activeRole);
+  const currentPermissions =
+    ROLE_PERMISSIONS[safeActiveRole] || ROLE_PERMISSIONS.Student;
 
   // Lookup map for book titles by ID
   const bookById = useMemo(() => {
@@ -981,40 +1021,31 @@ function LibraryPortalContent() {
     return list.length > 0 ? list : users;
   }, [users]);
 
-  // Automatically resolve the active user account for the chosen role (e.g. when choosing Librarian, automatically display the Librarian's name!)
+  // Automatically resolve the active user account for the chosen role (preferring the logged-in member's exact name)
   const activeRoleUser = useMemo<LibraryUser>(() => {
-    if (activeRole === 'Librarian') {
-      const libUser = users.find((u) => u.role === 'Librarian');
-      if (libUser) return libUser;
+    if (profile && normalizeUserRole(profile.role) === safeActiveRole) {
+      const matchedProfile = users.find(
+        (u) =>
+          u.id === profile.id ||
+          (u.uid && u.uid === profile.uid) ||
+          (u.email &&
+            profile.email &&
+            u.email.toLowerCase() === profile.email.toLowerCase()) ||
+          u.fullName.toLowerCase() === profile.fullName.toLowerCase()
+      );
+      if (matchedProfile) return matchedProfile;
+      return { ...profile, role: safeActiveRole };
     }
-    if (activeRole === 'Teacher') {
-      const teacherUser = users.find((u) => u.role === 'Teacher');
-      if (teacherUser) return teacherUser;
-    }
-    if (activeRole === 'Student') {
+    if (safeActiveRole === 'Student') {
       const studentUser =
         users.find(
           (u) => u.role === 'Student' && u.fullName === selectedStudentName
         ) || users.find((u) => u.role === 'Student');
       if (studentUser) return studentUser;
     }
-    if (activeRole === 'Administrator') {
-      if (profile) {
-        const matchedProfile = users.find(
-          (u) =>
-            u.id === profile.id ||
-            (u.uid && u.uid === profile.uid) ||
-            (u.email &&
-              profile.email &&
-              u.email.toLowerCase() === profile.email.toLowerCase())
-        );
-        if (matchedProfile && matchedProfile.role === 'Administrator') {
-          return matchedProfile;
-        }
-      }
-      const adminUser = users.find((u) => u.role === 'Administrator');
-      if (adminUser) return adminUser;
-    }
+    const matchedRoleUser = users.find((u) => u.role === safeActiveRole);
+    if (matchedRoleUser) return matchedRoleUser;
+
     return (
       users[0] ||
       profile || {
@@ -1022,13 +1053,13 @@ function LibraryPortalContent() {
         uid: 'bnhs-admin-bless',
         email: 'blesstajale@gmail.com',
         fullName: 'Bless T. Tajale',
-        role: activeRole,
+        role: safeActiveRole,
         idNumber: 'ADM-2026-0001',
         gradeOrDepartment: 'Library & Information Services',
         status: 'Active',
       }
     );
-  }, [activeRole, users, selectedStudentName, profile]);
+  }, [safeActiveRole, users, selectedStudentName, profile]);
 
   // Automatic Student Notification System:
   // 1. Borrowed books that are 2 days (or fewer) away from the due date
@@ -2372,6 +2403,9 @@ function LibraryPortalContent() {
     digital: 'Digital Library',
     management: 'Library Management',
     reports: 'Reports and Analytics',
+    create: 'Add or Create',
+    edit: 'Edit',
+    delete: 'Delete',
   };
 
   return (
@@ -2474,19 +2508,56 @@ function LibraryPortalContent() {
             );
           })}
 
-          {activeRole === 'Administrator' && (
-            <div className="pt-3 mt-3 border-t border-[#D4AF37]/20">
-              <button
-                onClick={() => setIsPortalSettingsOpen(true)}
-                className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-xs font-semibold text-[#D4AF37] hover:bg-white/5 transition-colors whitespace-nowrap shrink-0"
-              >
-                <ImageIcon className="h-4 w-4 shrink-0 text-[#D4AF37]" />
-                <span className="truncate">Edit Portal Image & Schedule</span>
-              </button>
+          {/* Consolidated Add or Create, Edit, and Delete Menus (Replaces Edit Portal Image & Schedule) */}
+          {currentPermissions.canManageBooks && (
+            <div className="pt-3 mt-3 border-t border-[#D4AF37]/20 space-y-1">
+              <div className="px-3 pb-1 text-[11px] font-medium text-[#D4AF37]/80">
+                Records Control
+              </div>
+              {(
+                [
+                  { id: 'create', label: 'Add or Create', icon: Plus },
+                  { id: 'edit', label: 'Edit', icon: Pencil },
+                  { id: 'delete', label: 'Delete', icon: Trash2 },
+                ] as const
+              ).map((actionMenu) => {
+                const Icon = actionMenu.icon;
+                const isActive = activeModule === actionMenu.id;
+                return (
+                  <button
+                    key={actionMenu.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveModule(actionMenu.id);
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      isActive
+                        ? actionMenu.id === 'delete'
+                          ? 'bg-red-700 text-white border border-red-300/60 shadow-sm'
+                          : 'bg-[#641526] text-white border border-[#D4AF37]/60 shadow-sm'
+                        : actionMenu.id === 'delete'
+                        ? 'text-red-200 hover:bg-red-950/60 hover:text-white'
+                        : 'text-[#D4AF37] hover:bg-white/5 hover:text-white'
+                    }`}
+                  >
+                    <Icon
+                      className={`h-4 w-4 shrink-0 ${
+                        actionMenu.id === 'delete'
+                          ? isActive
+                            ? 'text-white'
+                            : 'text-red-400'
+                          : 'text-[#D4AF37]'
+                      }`}
+                    />
+                    <span className="truncate">{actionMenu.label}</span>
+                  </button>
+                );
+              })}
             </div>
           )}
 
-          {/* Dashboard View Menu below Edit Portal Image & Schedule */}
+          {/* Dashboard View Menu */}
           <div className="pt-3 mt-3 border-t border-[#D4AF37]/20 space-y-1">
             <div className="px-3 pb-1 text-[11px] font-medium text-[#D4AF37]/80">
               Dashboard Views
@@ -2510,7 +2581,7 @@ function LibraryPortalContent() {
                     : 'text-[#D4AF37]'
                 }`}
               />
-              <span className="truncate">Admin / Librarian Overview</span>
+              <span className="truncate">Library Staff Overview</span>
             </button>
             <button
               onClick={() => {
@@ -2548,37 +2619,39 @@ function LibraryPortalContent() {
             </label>
             <select
               id="role-select"
-              value={activeRole}
-              onChange={(e) => setActiveRole(e.target.value as UserRole)}
+              value={safeActiveRole}
+              onChange={(e) => {
+                const nextRole = e.target.value as UserRole;
+                setActiveRole(nextRole);
+                if (
+                  !ROLE_PERMISSIONS[nextRole].canManageBooks &&
+                  (activeModule === 'create' ||
+                    activeModule === 'edit' ||
+                    activeModule === 'delete')
+                ) {
+                  setActiveModule('dashboard');
+                }
+              }}
               className="w-full rounded-lg bg-[#420B17] border border-[#D4AF37]/40 px-2.5 py-1.5 text-xs font-medium text-white focus:outline-none focus:border-[#D4AF37]"
             >
-              <option value="Administrator">Administrator (Full Access)</option>
-              <option value="Librarian">Librarian (Circulation & Books)</option>
-              <option value="Teacher">Teacher (Faculty Access)</option>
-              <option value="Student">Student ('My Library' View)</option>
+              {USER_ROLE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
             </select>
 
-            {/* Automatically displays the Librarian's or selected role's name */}
-            <div className="mt-2 rounded-lg bg-[#420B17]/90 border border-[#D4AF37]/35 px-2.5 py-2 flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <div className="text-[10px] font-semibold text-[#D4AF37] uppercase tracking-wider">
-                  Active {activeRole}
-                </div>
-                <div className="text-xs font-bold text-white truncate">
-                  {activeRoleUser.fullName}
-                </div>
-                <div className="text-[10px] text-white/75 font-mono truncate">
-                  {activeRoleUser.idNumber} · {activeRoleUser.gradeOrDepartment}
-                </div>
+            {/* Automatically displays the active logged-in member's name */}
+            <div className="mt-2 rounded-lg bg-[#420B17]/90 border border-[#D4AF37]/35 px-2.5 py-2">
+              <div className="text-[10px] font-semibold text-[#D4AF37] uppercase tracking-wider truncate">
+                Active {safeActiveRole}
               </div>
-              <button
-                type="button"
-                onClick={() => setEditingUser(activeRoleUser)}
-                title={`Edit ${activeRole} Name`}
-                className="rounded border border-[#D4AF37]/40 bg-[#641526] p-1.5 text-[#D4AF37] hover:bg-[#7a1b30] shrink-0"
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
+              <div className="text-xs font-bold text-white truncate">
+                {activeRoleUser.fullName}
+              </div>
+              <div className="text-[10px] text-white/75 font-mono truncate">
+                {activeRoleUser.idNumber} · {activeRoleUser.gradeOrDepartment}
+              </div>
             </div>
 
             <p className="mt-1.5 text-[11px] text-white/70">
@@ -2614,12 +2687,8 @@ function LibraryPortalContent() {
               type="button"
               onClick={handleManualCloudSync}
               disabled={isCloudSyncing}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2b060e] transition-colors whitespace-nowrap shrink-0 ${
-                needsGoogleLiveSync && !firebaseUser
-                  ? 'border-[#D4AF37] bg-[#420B17]'
-                  : 'border-emerald-400/40 bg-[#3A0A14]'
-              }`}
-              title={`Cloud Synced (Auto-Saved)${lastSyncedAt ? ` at ${lastSyncedAt}` : ''} — Automatically syncs Preview & Live Published across all browsers`}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-[#3A0A14] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2b060e] transition-colors whitespace-nowrap shrink-0"
+              title={`Cloud Synced (Auto-Saved)${lastSyncedAt ? ` at ${lastSyncedAt}` : ''} — Automatically saves & syncs Preview and Live Published across all browsers without Google Sign-In`}
             >
               {isCloudSyncing ? (
                 <RefreshCw className="h-3.5 w-3.5 text-[#D4AF37] animate-spin shrink-0" />
@@ -2627,11 +2696,7 @@ function LibraryPortalContent() {
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
               )}
               <span>
-                {isCloudSyncing
-                  ? 'Syncing Cloud...'
-                  : needsGoogleLiveSync && !firebaseUser
-                  ? 'Connect Google to Sync Live'
-                  : lastCloudSyncLabel}
+                {isCloudSyncing ? 'Syncing Cloud...' : lastCloudSyncLabel}
               </span>
               {!isCloudSyncing && lastSyncedAt && (
                 <span className="hidden sm:inline text-[10px] font-mono text-[#D4AF37]/85">
@@ -2710,52 +2775,34 @@ function LibraryPortalContent() {
               )}
             </div>
 
-            {currentPermissions.canManageBooks && (
-              <button
-                onClick={() => setIsAddBookOpen(true)}
-                className="hidden sm:inline-flex items-center gap-1.5 rounded-lg bg-[#D4AF37] px-3.5 py-2 text-xs font-semibold text-[#3A0A14] hover:bg-[#e3be42] transition-colors whitespace-nowrap shrink-0"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Register Book
-              </button>
-            )}
-
             <div className="flex items-center gap-2 sm:gap-3">
-              <div className="flex items-center gap-2 rounded-lg bg-[#3A0A14]/80 border border-[#D4AF37]/30 px-2.5 py-1 text-right">
-                <div>
-                  <div className="text-xs font-semibold text-white truncate max-w-[160px] sm:max-w-[210px]">
-                    {activeRoleUser.fullName}
-                  </div>
-                  <div className="text-[11px] text-[#D4AF37]">
-                    {activeRole} · {activeRoleUser.idNumber}
-                  </div>
+              <div className="rounded-lg bg-[#3A0A14]/80 border border-[#D4AF37]/30 px-2.5 py-1 text-right">
+                <div className="text-xs font-semibold text-white truncate max-w-[160px] sm:max-w-[210px]">
+                  {activeRoleUser.fullName}
                 </div>
+                <div className="text-[11px] text-[#D4AF37] truncate max-w-[190px]">
+                  {safeActiveRole} · {activeRoleUser.idNumber}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={openSignInModal}
+                className="inline-flex items-center gap-1.5 sm:gap-2 rounded-lg bg-[#D4AF37] px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs font-bold text-[#3A0A14] hover:bg-[#e5c247] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <LogIn className="h-3.5 w-3.5" />
+                <span>Portal Login</span>
+              </button>
+
+              {firebaseUser && (
                 <button
                   type="button"
-                  onClick={() => setEditingUser(activeRoleUser)}
-                  title={`Edit ${activeRole} Name`}
-                  className="rounded p-1 text-[#D4AF37] hover:bg-white/10 shrink-0"
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </button>
-              </div>
-              {firebaseUser ? (
-                <button
                   onClick={signOut}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/25 bg-[#3A0A14] px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs font-medium text-white hover:bg-[#2b060e] transition-colors whitespace-nowrap shrink-0"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/25 bg-[#3A0A14] px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-medium text-white hover:bg-[#2b060e] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   title={`Signed in via Google (${firebaseUser.email || 'Account'})`}
                 >
                   <LogOut className="h-3.5 w-3.5 text-[#D4AF37]" />
                   <span>Sign Out</span>
-                </button>
-              ) : (
-                <button
-                  onClick={signInWithGoogle}
-                  disabled={signingIn}
-                  className="inline-flex items-center gap-1.5 sm:gap-2 rounded-lg bg-[#3A0A14] border border-[#D4AF37]/60 px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs font-semibold text-white hover:bg-[#2b060e] disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
-                >
-                  <LogIn className="h-3.5 w-3.5 text-[#D4AF37]" />
-                  <span>{signingIn ? 'Connecting...' : 'Google Sign-In'}</span>
                 </button>
               )}
             </div>
@@ -2825,7 +2872,6 @@ function LibraryPortalContent() {
                     handleRequestBookReturnNotification
                   }
                   onNavigateCatalog={() => setActiveModule('catalog')}
-                  onEditStudentAccount={(student) => setEditingUser(student)}
                 />
               ) : (
                 <>
@@ -2884,13 +2930,6 @@ function LibraryPortalContent() {
                           className="rounded-lg bg-[#D4AF37] px-5 py-2.5 text-xs font-bold text-[#3A0A14] hover:bg-[#e5c247] transition-colors whitespace-nowrap shrink-0"
                         >
                           Search Catalog
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openBorrowModal()}
-                          className="rounded-lg bg-[#641526] border border-[#D4AF37]/50 px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#7a1b30] transition-colors whitespace-nowrap shrink-0"
-                        >
-                          Issue Book Loan
                         </button>
                       </form>
                     </div>
@@ -3225,16 +3264,9 @@ function LibraryPortalContent() {
                     Book Catalog
                   </h1>
                   <p className="text-xs text-white/80">
-                    Search, borrow, edit, or delete books by title, author, ISBN, subject, category, and availability
+                    Search, inspect, and borrow books by title, author, ISBN, subject, category, and availability
                   </p>
                 </div>
-                <button
-                  onClick={() => setIsAddBookOpen(true)}
-                  className="inline-flex items-center gap-2 rounded-lg bg-[#D4AF37] px-4 py-2.5 text-xs font-bold text-[#3A0A14] hover:bg-[#e5c247] transition-colors whitespace-nowrap shrink-0"
-                >
-                  <Plus className="h-4 w-4" />
-                  Add New Book to Catalog
-                </button>
               </div>
 
               {/* Filter & Search Bar Card */}
@@ -3385,20 +3417,6 @@ function LibraryPortalContent() {
                                   Details
                                 </button>
                                 <button
-                                  onClick={() => setEditingBook(book)}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-neutral-300 px-2.5 py-1.5 text-xs font-medium text-neutral-800 hover:bg-neutral-100 transition-colors whitespace-nowrap shrink-0"
-                                >
-                                  <Pencil className="h-3 w-3 text-[#641526]" />
-                                  Edit
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteBook(book)}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 transition-colors whitespace-nowrap shrink-0"
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                  Delete
-                                </button>
-                                <button
                                   onClick={() => openBorrowModal(book)}
                                   disabled={book.availableCopies === 0}
                                   className="rounded-lg bg-[#641526] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#4d0f1d] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
@@ -3428,16 +3446,9 @@ function LibraryPortalContent() {
                     Borrowing and Returning
                   </h1>
                   <p className="text-xs text-white/80">
-                    Record borrowers, issue dates, due dates, returns, and overdue books. Loans within 3 days of due date are highlighted with a yellow warning icon.
+                    Track borrowers, issue dates, due dates, returns, and overdue books. Loans within 3 days of due date are highlighted with a yellow warning icon.
                   </p>
                 </div>
-                <button
-                  onClick={() => openBorrowModal()}
-                  className="inline-flex items-center gap-2 rounded-lg bg-[#D4AF37] px-4 py-2.5 text-xs font-bold text-[#3A0A14] hover:bg-[#e5c247] transition-colors whitespace-nowrap shrink-0"
-                >
-                  <Plus className="h-4 w-4" />
-                  Record New Book Loan
-                </button>
               </div>
 
               {/* Interactive Status Tabs */}
@@ -3639,16 +3650,9 @@ function LibraryPortalContent() {
                     BNHS Digital Library
                   </h1>
                   <p className="text-xs text-white/80">
-                    Access, upload, edit, and delete e-books, PDF learning materials, DepEd Self-Learning Modules (SLMs), journals, and research references
+                    Browse, preview, and download e-books, PDF learning materials, DepEd Self-Learning Modules (SLMs), journals, and research references
                   </p>
                 </div>
-                <button
-                  onClick={() => setIsUploadDigitalOpen(true)}
-                  className="inline-flex items-center gap-2 rounded-lg bg-[#D4AF37] px-4 py-2.5 text-xs font-bold text-[#3A0A14] hover:bg-[#e5c247] transition-colors whitespace-nowrap shrink-0"
-                >
-                  <Plus className="h-4 w-4" />
-                  Upload Digital Material
-                </button>
               </div>
 
               {/* Filter Bar */}
@@ -3705,23 +3709,6 @@ function LibraryPortalContent() {
                           <span className="text-neutral-500 font-normal">
                             {resItem.gradeLevel}
                           </span>
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => setEditingDigital(resItem)}
-                            className="inline-flex items-center gap-1 rounded border border-neutral-300 px-2 py-1 text-[11px] font-medium text-neutral-700 hover:bg-neutral-100 transition-colors"
-                          >
-                            <Pencil className="h-3 w-3 text-[#641526]" />
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleDeleteDigitalResource(resItem)}
-                            className="inline-flex items-center gap-1 rounded border border-red-200 px-2 py-1 text-[11px] font-medium text-red-700 hover:bg-red-50 transition-colors"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                            Delete
-                          </button>
                         </div>
                       </div>
 
@@ -3823,25 +3810,18 @@ function LibraryPortalContent() {
                 </div>
               </div>
 
-              {/* Sub-tab 1: Book Inventory Management */}
+              {/* Sub-tab 1: Book Inventory Overview (Read-Only Directory) */}
               {managementTab === 'inventory' && (
                 <div className="rounded-xl bg-white text-[#1E1B18] border border-neutral-200 overflow-hidden shadow-sm">
                   <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 border-b border-neutral-200">
                     <div>
                       <h3 className="font-display text-base font-bold text-[#641526]">
-                        Master Book Inventory Control
+                        Master Book Inventory Directory
                       </h3>
                       <p className="text-xs text-neutral-500">
-                        Add, edit, or delete book catalog records
+                        Complete live holdings overview across all BNHS library wings
                       </p>
                     </div>
-                    <button
-                      onClick={() => setIsAddBookOpen(true)}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-[#641526] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#4d0f1d] transition-colors whitespace-nowrap shrink-0"
-                    >
-                      <Plus className="h-3.5 w-3.5 text-[#D4AF37]" />
-                      Register New Book
-                    </button>
                   </div>
 
                   <div className="overflow-x-auto">
@@ -3852,8 +3832,7 @@ function LibraryPortalContent() {
                           <th className="py-3 px-4">ISBN</th>
                           <th className="py-3 px-4">Category</th>
                           <th className="py-3 px-4">Shelf</th>
-                          <th className="py-3 px-4 text-right">Total / Avail</th>
-                          <th className="py-3 px-5 text-right">Manage</th>
+                          <th className="py-3 px-5 text-right">Total / Avail</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-neutral-200 text-xs">
@@ -3870,26 +3849,8 @@ function LibraryPortalContent() {
                             </td>
                             <td className="py-3.5 px-4">{book.category}</td>
                             <td className="py-3.5 px-4">{book.shelfLocation}</td>
-                            <td className="py-3.5 px-4 text-right font-mono font-semibold tabular-nums">
+                            <td className="py-3.5 px-5 text-right font-mono font-semibold tabular-nums">
                               {book.totalCopies} / {book.availableCopies}
-                            </td>
-                            <td className="py-3.5 px-5 text-right whitespace-nowrap">
-                              <div className="inline-flex items-center gap-1.5">
-                                <button
-                                  onClick={() => setEditingBook(book)}
-                                  className="inline-flex items-center gap-1 rounded border border-neutral-300 px-2.5 py-1 text-xs font-medium text-neutral-800 hover:bg-neutral-100 transition-colors whitespace-nowrap shrink-0"
-                                >
-                                  <Pencil className="h-3.5 w-3.5 text-[#641526]" />
-                                  Edit
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteBook(book)}
-                                  className="inline-flex items-center gap-1 rounded border border-red-200 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 transition-colors whitespace-nowrap shrink-0"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                  Delete
-                                </button>
-                              </div>
                             </td>
                           </tr>
                         ))}
@@ -3899,519 +3860,148 @@ function LibraryPortalContent() {
                 </div>
               )}
 
-              {/* Sub-tab 2: Users & Role Permissions */}
+              {/* Sub-tab 2: Users & Role Permissions Directory (Read-Only View) */}
               {managementTab === 'users' && (
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                  <div className="lg:col-span-8 rounded-xl bg-white text-[#1E1B18] border border-neutral-200 overflow-hidden shadow-sm">
-                    <div className="px-6 py-4 border-b border-neutral-200 space-y-3">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <h3 className="font-display text-base font-bold text-[#641526]">
-                            Registered BNHS Library Accounts
-                          </h3>
-                          <p className="text-xs text-neutral-500">
-                            Edit member profiles, delete accounts, or choose a role to display its assigned member
-                          </p>
-                        </div>
-
-                        {/* Role Quick-Filter & Automatic Role Name Display */}
-                        <div className="flex flex-wrap items-center gap-1 bg-neutral-100 p-1 rounded-lg">
-                          {(
-                            [
-                              'All',
-                              'Administrator',
-                              'Librarian',
-                              'Teacher',
-                              'Student',
-                            ] as const
-                          ).map((roleOpt) => (
-                            <button
-                              key={roleOpt}
-                              type="button"
-                              onClick={() => {
-                                setUserRoleFilter(roleOpt);
-                                if (roleOpt !== 'All') {
-                                  setActiveRole(roleOpt);
-                                  const matched = users.find(
-                                    (u) => u.role === roleOpt
-                                  );
-                                  if (matched) {
-                                    setMemberForm({
-                                      editingExistingId: matched.id,
-                                      fullName: matched.fullName,
-                                      email: matched.email,
-                                      role: matched.role,
-                                      idNumber: matched.idNumber,
-                                      gradeOrDepartment:
-                                        matched.gradeOrDepartment,
-                                    });
-                                  }
-                                }
-                              }}
-                              className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
-                                userRoleFilter === roleOpt
-                                  ? 'bg-[#641526] text-white shadow-xs'
-                                  : 'text-neutral-700 hover:bg-neutral-200'
-                              }`}
-                            >
-                              {roleOpt}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Active Role / Librarian Name Highlight Banner */}
-                      <div className="rounded-lg bg-[#641526]/5 border border-[#641526]/20 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-semibold text-[#641526]">
-                            Active {activeRole} Account:
-                          </span>
-                          <span className="font-bold text-neutral-900">
-                            {activeRoleUser.fullName}
-                          </span>
-                          <span className="font-mono text-neutral-600">
-                            ({activeRoleUser.idNumber} ·{' '}
-                            {activeRoleUser.gradeOrDepartment})
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setEditingUser(activeRoleUser)}
-                          className="inline-flex items-center gap-1 rounded-md bg-[#641526] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#4d0f1d]"
-                        >
-                          <Pencil className="h-3 w-3 text-[#D4AF37]" />
-                          Edit {activeRole} Name
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse">
-                        <thead>
-                          <tr className="border-b border-neutral-200 bg-neutral-50 text-xs font-semibold text-neutral-600">
-                            <th className="py-3 px-5">Full Name & Email</th>
-                            <th className="py-3 px-4">ID / LRN</th>
-                            <th className="py-3 px-4">Department / Grade</th>
-                            <th className="py-3 px-4">Role</th>
-                            <th className="py-3 px-5 text-right">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-neutral-200 text-xs">
-                          {users
-                            .filter(
-                              (u) =>
-                                userRoleFilter === 'All' ||
-                                u.role === userRoleFilter
-                            )
-                            .map((u) => (
-                              <tr key={u.id} className="hover:bg-neutral-50">
-                                <td className="py-3.5 px-5">
-                                  <div className="font-semibold text-neutral-900">
-                                    {u.fullName}
-                                  </div>
-                                  <div className="text-neutral-500">
-                                    {u.email}
-                                  </div>
-                                </td>
-                                <td className="py-3.5 px-4 font-mono tabular-nums">
-                                  {u.idNumber}
-                                </td>
-                                <td className="py-3.5 px-4">
-                                  {u.gradeOrDepartment}
-                                </td>
-                                <td className="py-3.5 px-4">
-                                  <select
-                                    value={u.role}
-                                    onChange={(e) => {
-                                      const nextRole = e.target
-                                        .value as UserRole;
-                                      handleChangeMemberRole(u, nextRole);
-                                      if (nextRole === 'Librarian') {
-                                        setActiveRole('Librarian');
-                                      }
-                                    }}
-                                    className="rounded border border-neutral-300 bg-white px-2 py-1 text-xs font-semibold text-[#641526] focus:outline-none focus:border-[#641526]"
-                                  >
-                                    <option value="Administrator">
-                                      Administrator
-                                    </option>
-                                    <option value="Librarian">Librarian</option>
-                                    <option value="Teacher">Teacher</option>
-                                    <option value="Student">Student</option>
-                                  </select>
-                                </td>
-                                <td className="py-3.5 px-5 text-right whitespace-nowrap">
-                                  <div className="inline-flex items-center gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        memberFormDirtyRef.current = false;
-                                        setEditingUser(u);
-                                        setMemberForm({
-                                          editingExistingId: u.id,
-                                          fullName: u.fullName,
-                                          email: u.email,
-                                          role: u.role,
-                                          idNumber: u.idNumber,
-                                          gradeOrDepartment:
-                                            u.gradeOrDepartment,
-                                        });
-                                      }}
-                                      className="inline-flex items-center gap-1 rounded bg-[#641526] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#4d0f1d] transition-colors cursor-pointer"
-                                    >
-                                      <Pencil className="h-3 w-3 text-[#D4AF37]" />
-                                      Edit
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteUser(u)}
-                                      className="inline-flex items-center gap-1 rounded bg-red-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-red-700 transition-colors cursor-pointer"
-                                    >
-                                      <Trash2 className="h-3 w-3" />
-                                      Delete
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  {/* Register or Edit User Form */}
-                  <form
-                    onSubmit={handleCreateMember}
-                    className="lg:col-span-4 rounded-xl bg-white p-6 text-[#1E1B18] border border-neutral-200 shadow-sm space-y-4"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <UserCheck className="h-5 w-5 text-[#641526]" />
+                <div className="rounded-xl bg-white text-[#1E1B18] border border-neutral-200 overflow-hidden shadow-sm">
+                  <div className="px-6 py-4 border-b border-neutral-200 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
                         <h3 className="font-display text-base font-bold text-[#641526]">
-                          {memberForm.editingExistingId > 0
-                            ? 'Edit Selected Member'
-                            : 'Register Library Member'}
+                          Registered BNHS Library Accounts
                         </h3>
+                        <p className="text-xs text-neutral-500">
+                          Browse registered accounts by role — School Librarian, Assistant School Librarian, Librarian Support Staff, Administrator, Teacher, and Student
+                        </p>
                       </div>
-                      {memberForm.editingExistingId > 0 && (
+
+                      {/* Role Quick-Filter */}
+                      <div className="flex flex-wrap items-center gap-1 bg-neutral-100 p-1 rounded-lg">
                         <button
                           type="button"
-                          onClick={() => {
-                            memberFormDirtyRef.current = false;
-                            setMemberForm({
-                              editingExistingId: 0,
-                              fullName: '',
-                              email: '',
-                              role: 'Student',
-                              idNumber: '',
-                              gradeOrDepartment: '',
-                            });
-                          }}
-                          className="text-[11px] font-semibold text-[#641526] underline hover:text-[#4d0f1d]"
+                          onClick={() => setUserRoleFilter('All')}
+                          className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                            userRoleFilter === 'All'
+                              ? 'bg-[#641526] text-white shadow-xs'
+                              : 'text-neutral-700 hover:bg-neutral-200'
+                          }`}
                         >
-                          New Member
+                          All ({users.length})
                         </button>
-                      )}
-                    </div>
-
-                    <div className="space-y-3 text-xs">
-                      <div className="grid grid-cols-2 gap-2.5">
-                        <div>
-                          <label className="block font-semibold text-neutral-700 mb-1">
-                            User Role
-                          </label>
-                          <select
-                            value={memberForm.role}
-                            onChange={(e) => {
-                              const chosenRole = e.target.value as UserRole;
-                              // When choosing Librarian (or another role), automatically display that role's member name
-                              if (chosenRole === 'Librarian') {
-                                setActiveRole('Librarian');
-                                const libUser = users.find(
-                                  (u) => u.role === 'Librarian'
-                                );
-                                if (libUser) {
-                                  memberFormDirtyRef.current = false;
-                                  setMemberForm({
-                                    editingExistingId: libUser.id,
-                                    fullName: libUser.fullName,
-                                    email: libUser.email,
-                                    role: 'Librarian',
-                                    idNumber: libUser.idNumber,
-                                    gradeOrDepartment:
-                                      libUser.gradeOrDepartment,
-                                  });
-                                  return;
-                                }
-                              }
-                              memberFormDirtyRef.current = true;
-                              setMemberForm({
-                                ...memberForm,
-                                role: chosenRole,
-                              });
+                        {USER_ROLE_OPTIONS.map((opt) => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => {
+                              setUserRoleFilter(opt.value);
+                              setActiveRole(opt.value);
                             }}
-                            className="w-full rounded-lg border border-neutral-300 px-2.5 py-2 text-neutral-900 font-semibold"
+                            className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                              userRoleFilter === opt.value
+                                ? 'bg-[#641526] text-white shadow-xs'
+                                : 'text-neutral-700 hover:bg-neutral-200'
+                            }`}
                           >
-                            <option value="Student">Student</option>
-                            <option value="Teacher">Teacher</option>
-                            <option value="Librarian">Librarian</option>
-                            <option value="Administrator">Administrator</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block font-semibold text-neutral-700 mb-1">
-                            LRN / Employee ID
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            value={memberForm.idNumber}
-                            onChange={(e) => {
-                              memberFormDirtyRef.current = true;
-                              setMemberForm({
-                                ...memberForm,
-                                idNumber: e.target.value,
-                              });
-                            }}
-                            placeholder="LRN-132604..."
-                            className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 font-mono"
-                          />
-                        </div>
+                            {opt.shortLabel}
+                          </button>
+                        ))}
                       </div>
-
-                      <div>
-                        <label className="block font-semibold text-neutral-700 mb-1">
-                          Full Name
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={memberForm.fullName}
-                          onChange={(e) => {
-                            memberFormDirtyRef.current = true;
-                            setMemberForm({
-                              ...memberForm,
-                              fullName: e.target.value,
-                            });
-                          }}
-                          placeholder="e.g. Mrs. Marites R. Dela Cruz, RL"
-                          className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 font-semibold"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block font-semibold text-neutral-700 mb-1">
-                          School Email
-                        </label>
-                        <input
-                          type="email"
-                          required
-                          value={memberForm.email}
-                          onChange={(e) => {
-                            memberFormDirtyRef.current = true;
-                            setMemberForm({
-                              ...memberForm,
-                              email: e.target.value,
-                            });
-                          }}
-                          placeholder="m.delacruz@bnhs.edu.ph"
-                          className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block font-semibold text-neutral-700 mb-1">
-                          Grade & Section / Department
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={memberForm.gradeOrDepartment}
-                          onChange={(e) => {
-                            memberFormDirtyRef.current = true;
-                            setMemberForm({
-                              ...memberForm,
-                              gradeOrDepartment: e.target.value,
-                            });
-                          }}
-                          placeholder="e.g. Head School Librarian"
-                          className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
-                        />
-                      </div>
-
-                      <button
-                        type="submit"
-                        className="w-full rounded-lg bg-[#641526] py-2.5 text-xs font-semibold text-white hover:bg-[#4d0f1d] transition-colors cursor-pointer"
-                      >
-                        {memberForm.editingExistingId > 0
-                          ? 'Update Member Account'
-                          : 'Save User Account'}
-                      </button>
                     </div>
-                  </form>
-                </div>
-              )}
 
-              {/* Sub-tab 3: Shelf Categories */}
-              {managementTab === 'categories' && (
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                  <div className="lg:col-span-8 rounded-xl bg-white text-[#1E1B18] border border-neutral-200 overflow-hidden shadow-sm">
-                    <div className="px-6 py-4 border-b border-neutral-200">
-                      <h3 className="font-display text-base font-bold text-[#641526]">
-                        BNHS Library Classification & Shelf Zones
-                      </h3>
-                    </div>
-                    <div className="divide-y divide-neutral-200">
-                      {categories.map((cat) => (
-                        <div
-                          key={cat.id}
-                          className="p-4 flex items-start justify-between gap-4"
-                        >
-                          <div>
-                            <div className="font-semibold text-sm text-neutral-900">
-                              {cat.name}
-                            </div>
-                            <div className="font-mono text-xs text-[#641526] mt-0.5">
-                              {cat.code} · {cat.shelfZone}
-                            </div>
-                            <p className="text-xs text-neutral-600 mt-1">
-                              {cat.description}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <button
-                              onClick={() => setEditingCategory(cat)}
-                              className="inline-flex items-center gap-1 rounded border border-neutral-300 px-2.5 py-1 text-xs font-medium text-neutral-800 hover:bg-neutral-100 transition-colors"
-                            >
-                              <Pencil className="h-3 w-3 text-[#641526]" />
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => handleDeleteCategory(cat)}
-                              className="inline-flex items-center gap-1 rounded border border-red-200 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 transition-colors"
-                            >
-                              <Trash2 className="h-3 w-3" />
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                    {/* Active Role Member Display Banner */}
+                    <div className="rounded-lg bg-[#641526]/5 border border-[#641526]/20 px-4 py-2.5 flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-semibold text-[#641526]">
+                        Active {safeActiveRole} Account:
+                      </span>
+                      <span className="font-bold text-neutral-900">
+                        {activeRoleUser.fullName}
+                      </span>
+                      <span className="font-mono text-neutral-600">
+                        ({activeRoleUser.idNumber} ·{' '}
+                        {activeRoleUser.gradeOrDepartment})
+                      </span>
                     </div>
                   </div>
 
-                  <form
-                    onSubmit={handleCreateCategory}
-                    className="lg:col-span-4 rounded-xl bg-white p-6 text-[#1E1B18] border border-neutral-200 shadow-sm space-y-4"
-                  >
-                    <h3 className="font-display text-base font-bold text-[#641526]">
-                      Add Shelf Category
-                    </h3>
-                    <div className="space-y-3 text-xs">
-                      <div>
-                        <label className="block font-semibold text-neutral-700 mb-1">
-                          Category Name
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={categoryForm.name}
-                          onChange={(e) =>
-                            setCategoryForm({
-                              ...categoryForm,
-                              name: e.target.value,
-                            })
-                          }
-                          placeholder="e.g. Agriculture & Fisheries (TVL)"
-                          className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-2.5">
-                        <div>
-                          <label className="block font-semibold text-neutral-700 mb-1">
-                            Classification Code
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            value={categoryForm.code}
-                            onChange={(e) =>
-                              setCategoryForm({
-                                ...categoryForm,
-                                code: e.target.value,
-                              })
-                            }
-                            placeholder="TVL-600"
-                            className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-neutral-900"
-                          />
-                        </div>
-                        <div>
-                          <label className="block font-semibold text-neutral-700 mb-1">
-                            Shelf Zone
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            value={categoryForm.shelfZone}
-                            onChange={(e) =>
-                              setCategoryForm({
-                                ...categoryForm,
-                                shelfZone: e.target.value,
-                              })
-                            }
-                            placeholder="Wing D · Shelf 9"
-                            className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <label className="block font-semibold text-neutral-700 mb-1">
-                          Description
-                        </label>
-                        <textarea
-                          rows={3}
-                          required
-                          value={categoryForm.description}
-                          onChange={(e) =>
-                            setCategoryForm({
-                              ...categoryForm,
-                              description: e.target.value,
-                            })
-                          }
-                          placeholder="Scope of books stored in this section..."
-                          className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
-                        />
-                      </div>
-                      <button
-                        type="submit"
-                        className="w-full rounded-lg bg-[#641526] py-2.5 text-xs font-semibold text-white hover:bg-[#4d0f1d] transition-colors"
-                      >
-                        Create Category
-                      </button>
-                    </div>
-                  </form>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-neutral-200 bg-neutral-50 text-xs font-semibold text-neutral-600">
+                          <th className="py-3 px-5">Full Name & Email</th>
+                          <th className="py-3 px-4">ID / LRN</th>
+                          <th className="py-3 px-4">Department / Grade</th>
+                          <th className="py-3 px-5">Role Permission</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-200 text-xs">
+                        {users
+                          .filter(
+                            (u) =>
+                              userRoleFilter === 'All' ||
+                              u.role === userRoleFilter
+                          )
+                          .map((u) => (
+                            <tr key={u.id} className="hover:bg-neutral-50">
+                              <td className="py-3.5 px-5">
+                                <div className="font-semibold text-neutral-900">
+                                  {u.fullName}
+                                </div>
+                                <div className="text-neutral-500">{u.email}</div>
+                              </td>
+                              <td className="py-3.5 px-4 font-mono tabular-nums">
+                                {u.idNumber}
+                              </td>
+                              <td className="py-3.5 px-4">
+                                {u.gradeOrDepartment}
+                              </td>
+                              <td className="py-3.5 px-5 font-semibold text-[#641526]">
+                                {USER_ROLE_OPTIONS.find(
+                                  (r) => r.value === u.role
+                                )?.label || u.role}
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
 
-              {/* Sub-tab 4: Portal Banner Image & Schedule Settings */}
+              {/* Sub-tab 3: Shelf Categories Directory (Read-Only View) */}
+              {managementTab === 'categories' && (
+                <div className="rounded-xl bg-white text-[#1E1B18] border border-neutral-200 overflow-hidden shadow-sm">
+                  <div className="px-6 py-4 border-b border-neutral-200">
+                    <h3 className="font-display text-base font-bold text-[#641526]">
+                      BNHS Library Classification & Shelf Zones
+                    </h3>
+                  </div>
+                  <div className="divide-y divide-neutral-200">
+                    {categories.map((cat) => (
+                      <div key={cat.id} className="p-4">
+                        <div className="font-semibold text-sm text-neutral-900">
+                          {cat.name}
+                        </div>
+                        <div className="font-mono text-xs text-[#641526] mt-0.5">
+                          {cat.code} · {cat.shelfZone}
+                        </div>
+                        <p className="text-xs text-neutral-600 mt-1">
+                          {cat.description}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-tab 4: Portal Banner Image & Schedule Preview (Read-Only View) */}
               {managementTab === 'branding' && (
                 <div className="rounded-xl bg-white p-6 text-[#1E1B18] border border-neutral-200 shadow-sm space-y-5">
-                  <div className="flex flex-wrap items-center justify-between gap-4 border-b border-neutral-200 pb-4">
-                    <div>
-                      <h3 className="font-display text-base font-bold text-[#641526]">
-                        BNHS Portal Banner, Image & Academic Schedule Settings
-                      </h3>
-                      <p className="text-xs text-neutral-500">
-                        Upload or link the hero image and school logo GIF via local file or Google Link, and update operating hours banner text
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => setIsPortalSettingsOpen(true)}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-[#641526] px-4 py-2 text-xs font-semibold text-white hover:bg-[#4d0f1d]"
-                    >
-                      <Pencil className="h-3.5 w-3.5 text-[#D4AF37]" />
-                      Edit BNHS Portal Banner, Image & Schedule
-                    </button>
+                  <div className="border-b border-neutral-200 pb-4">
+                    <h3 className="font-display text-base font-bold text-[#641526]">
+                      BNHS Portal Banner, Image & Academic Schedule Preview
+                    </h3>
+                    <p className="text-xs text-neutral-500">
+                      Live synchronized view of the active hero image, school logo GIF, and academic schedule text
+                    </p>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs">
@@ -4664,6 +4254,50 @@ function LibraryPortalContent() {
               </div>
             </section>
           )}
+          {/* ================================================================
+              CONSOLIDATED MODULES: ADD OR CREATE / EDIT / DELETE
+             ================================================================ */}
+          {(activeModule === 'create' ||
+            activeModule === 'edit' ||
+            activeModule === 'delete') &&
+            currentPermissions.canManageBooks && (
+              <ConsolidatedCrudHub
+                mode={activeModule}
+                books={books}
+                categories={categories}
+                digitalResources={digitalResources}
+                users={users}
+                portalSettings={portalSettings}
+                isCloudSyncing={isCloudSyncing}
+                lastSyncedAt={lastSyncedAt}
+                newBookForm={newBookForm}
+                setNewBookForm={setNewBookForm}
+                onAddBookSubmit={handleAddBookSubmit}
+                digitalForm={digitalForm}
+                setDigitalForm={setDigitalForm}
+                attachedUploadFileName={attachedUploadFileName}
+                onUploadDigitalFilePick={handleUploadDigitalFilePick}
+                onUploadDigitalSubmit={handleUploadDigitalSubmit}
+                categoryForm={categoryForm}
+                setCategoryForm={setCategoryForm}
+                onCreateCategory={handleCreateCategory}
+                memberForm={memberForm}
+                setMemberForm={setMemberForm}
+                onCreateMember={handleCreateMember}
+                onOpenBorrowModal={openBorrowModal}
+                submitting={submitting}
+                onOpenPortalSettings={() => setIsPortalSettingsOpen(true)}
+                onEditBook={(b) => setEditingBook(b)}
+                onEditDigital={(d) => setEditingDigital(d)}
+                onEditCategory={(c) => setEditingCategory(c)}
+                onEditUser={(u) => setEditingUser(u)}
+                onChangeMemberRole={handleChangeMemberRole}
+                onDeleteBook={handleDeleteBook}
+                onDeleteDigital={handleDeleteDigitalResource}
+                onDeleteCategory={handleDeleteCategory}
+                onDeleteUser={handleDeleteUser}
+              />
+            )}
         </main>
 
         {/* Quiet Academic Footer */}
@@ -4685,10 +4319,10 @@ function LibraryPortalContent() {
               Digital Library
             </button>
             <button
-              onClick={() => setIsPortalSettingsOpen(true)}
+              onClick={() => setActiveModule('reports')}
               className="hover:text-[#D4AF37] transition-colors"
             >
-              Edit Portal Settings
+              Reports & Analytics
             </button>
           </div>
         </footer>
@@ -4892,10 +4526,11 @@ function LibraryPortalContent() {
                     }}
                     className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900"
                   >
-                    <option value="Student">Student</option>
-                    <option value="Teacher">Teacher</option>
-                    <option value="Librarian">Librarian</option>
-                    <option value="Administrator">Administrator</option>
+                    {USER_ROLE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -5552,16 +5187,23 @@ function LibraryPortalContent() {
         onSave={handleUpdateCategory}
       />
 
-      <GoogleSignInModal
+      <FluorescentBulbLoginModal
         isOpen={isSignInModalOpen}
         users={users}
+        initialRole={safeActiveRole}
         onClose={closeSignInModal}
-        onGooglePopupSignIn={signInWithGooglePopup}
         onSelectAccount={async (account) => {
           await signInWithPortalAccount(account);
+          if (account.role === 'Student') {
+            setSelectedStudentName(account.fullName);
+            setActiveModule('dashboard');
+            setDashboardSubView('my_library');
+          } else {
+            setDashboardSubView('overview');
+          }
           showToast(
             'success',
-            `Signed in as ${account.fullName} (${account.email}) — ${account.role}.`
+            `Signed in as ${account.fullName} — ${account.role}.`
           );
         }}
       />

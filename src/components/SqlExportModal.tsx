@@ -31,13 +31,13 @@ export const SqlExportModal: React.FC<SqlExportModalProps> = ({
 CREATE DATABASE IF NOT EXISTS bnhs_library_portal CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE bnhs_library_portal;
 
--- 1. User Accounts & Permissions (Administrator, Librarian, Teacher, Student)
+-- 1. User Accounts & Permissions (Administrator, School Librarian, Assistant School Librarian, Librarian Support Staff, Teacher, Student)
 CREATE TABLE IF NOT EXISTS users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   uid VARCHAR(128) NOT NULL UNIQUE,
   email VARCHAR(150) NOT NULL,
   full_name VARCHAR(150) NOT NULL,
-  role ENUM('Administrator', 'Librarian', 'Teacher', 'Student') NOT NULL DEFAULT 'Student',
+  role ENUM('Administrator', 'School Librarian', 'Assistant School Librarian', 'Librarian Support Staff', 'Teacher', 'Student') NOT NULL DEFAULT 'Student',
   id_number VARCHAR(64) NOT NULL,
   grade_or_department VARCHAR(120) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'Active',

@@ -56,3 +56,88 @@
 .bnhs-logo-animate {
   animation: bnhsLogoPulse 2.8s ease-in-out infinite;
 }
+
+/* Interactive Fluorescent Bulb Ignition Flicker Animation */
+@keyframes fluorescentIgnite {
+  0% {
+    opacity: 0.2;
+    filter: brightness(0.6) drop-shadow(0 0 0px rgba(240, 250, 255, 0));
+  }
+  12% {
+    opacity: 0.95;
+    filter: brightness(1.35) drop-shadow(0 0 18px rgba(224, 247, 255, 0.95));
+  }
+  20% {
+    opacity: 0.28;
+    filter: brightness(0.7) drop-shadow(0 0 2px rgba(224, 247, 255, 0.2));
+  }
+  34% {
+    opacity: 1;
+    filter: brightness(1.4) drop-shadow(0 0 26px rgba(224, 247, 255, 1));
+  }
+  42% {
+    opacity: 0.55;
+    filter: brightness(0.9) drop-shadow(0 0 8px rgba(224, 247, 255, 0.5));
+  }
+  58% {
+    opacity: 1;
+    filter: brightness(1.25) drop-shadow(0 0 28px rgba(215, 246, 255, 0.95));
+  }
+  100% {
+    opacity: 1;
+    filter: brightness(1.12) drop-shadow(0 0 24px rgba(215, 246, 255, 0.9));
+  }
+}
+
+@keyframes fluorescentFormReveal {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.fluorescent-tube-lit {
+  animation: fluorescentIgnite 0.72s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.fluorescent-form-reveal {
+  animation: fluorescentFormReveal 0.42s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fluorescent-tube-lit,
+  .fluorescent-form-reveal,
+  .bnhs-logo-animate {
+    animation: none;
+  }
+}
+
+/* Always-visible custom scrollbar for Member Name Selector in Login Form */
+.bnhs-member-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #641526 #f3e8eb;
+}
+
+.bnhs-member-scrollbar::-webkit-scrollbar {
+  width: 10px;
+}
+
+.bnhs-member-scrollbar::-webkit-scrollbar-track {
+  background: #f3e8eb;
+  border-radius: 6px;
+}
+
+.bnhs-member-scrollbar::-webkit-scrollbar-thumb {
+  background: #641526;
+  border-radius: 6px;
+  border: 2px solid #f3e8eb;
+}
+
+.bnhs-member-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #8e1e36;
+}
+

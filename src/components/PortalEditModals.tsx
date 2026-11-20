@@ -18,6 +18,8 @@ import {
   LibraryUser,
   PortalSettings,
   UserRole,
+  USER_ROLE_OPTIONS,
+  normalizeUserRole,
 } from '../types.ts';
 import { BUNDLED_ASSETS, INITIAL_USERS } from '../data/bnhsInitialData.ts';
 import {
@@ -1279,7 +1281,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
       setForm({
         fullName: user.fullName || '',
         email: user.email || '',
-        role: user.role || 'Student',
+        role: normalizeUserRole(user.role),
         idNumber: user.idNumber || '',
         gradeOrDepartment: user.gradeOrDepartment || '',
         status: user.status || 'Active',
@@ -1347,12 +1349,16 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
 
   const handleRoleChangeInModal = (nextRole: LibraryUser['role']) => {
     dirtyRef.current = true;
+    const isLibraryStaffRole =
+      nextRole === 'School Librarian' ||
+      nextRole === 'Assistant School Librarian' ||
+      nextRole === 'Librarian Support Staff';
     const matchedRoleUser =
       allUsers.find((u) => u.role === nextRole && u.id !== user.id) ||
       allUsers.find((u) => u.role === nextRole) ||
       INITIAL_USERS.find((u) => u.role === nextRole);
 
-    if (nextRole === 'Librarian' && matchedRoleUser) {
+    if (isLibraryStaffRole && matchedRoleUser) {
       setForm((prev) => ({
         ...prev,
         role: nextRole,
@@ -1362,7 +1368,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             : matchedRoleUser.fullName,
         gradeOrDepartment:
           prev.gradeOrDepartment.startsWith('Grade') || !prev.gradeOrDepartment
-            ? matchedRoleUser.gradeOrDepartment || 'Head School Librarian'
+            ? matchedRoleUser.gradeOrDepartment || nextRole
             : prev.gradeOrDepartment,
       }));
       return;
@@ -1454,10 +1460,11 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                 }
                 className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-neutral-900 font-semibold focus:border-[#641526] focus:outline-none"
               >
-                <option value="Administrator">Administrator</option>
-                <option value="Librarian">Librarian</option>
-                <option value="Teacher">Teacher</option>
-                <option value="Student">Student</option>
+                {USER_ROLE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
@@ -1914,10 +1921,11 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
                   }
                   className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 text-neutral-900"
                 >
-                  <option value="Administrator">Administrator</option>
-                  <option value="Librarian">Librarian</option>
-                  <option value="Teacher">Teacher</option>
-                  <option value="Student">Student</option>
+                  {USER_ROLE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div>

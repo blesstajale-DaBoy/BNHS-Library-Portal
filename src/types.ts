@@ -1,4 +1,63 @@
-export type UserRole = 'Administrator' | 'Librarian' | 'Teacher' | 'Student';
+export type UserRole =
+  | 'Administrator'
+  | 'School Librarian'
+  | 'Assistant School Librarian'
+  | 'Librarian Support Staff'
+  | 'Teacher'
+  | 'Student';
+
+export const USER_ROLE_OPTIONS: {
+  value: UserRole;
+  label: string;
+  shortLabel: string;
+}[] = [
+  {
+    value: 'Administrator',
+    label: 'Administrator (Full Access)',
+    shortLabel: 'Administrator',
+  },
+  {
+    value: 'School Librarian',
+    label: 'School Librarian (full Access, Circulations & Books)',
+    shortLabel: 'School Librarian',
+  },
+  {
+    value: 'Assistant School Librarian',
+    label: 'Assistant School Librarian (full Access, Circulations & Books)',
+    shortLabel: 'Assistant School Librarian',
+  },
+  {
+    value: 'Librarian Support Staff',
+    label: 'Librarian Support Staff (full Access, Circulations & Books)',
+    shortLabel: 'Librarian Support Staff',
+  },
+  {
+    value: 'Teacher',
+    label: 'Teacher (Faculty Access)',
+    shortLabel: 'Teacher',
+  },
+  {
+    value: 'Student',
+    label: "Student ('My Library' View)",
+    shortLabel: 'Student',
+  },
+];
+
+export function normalizeUserRole(raw: unknown): UserRole {
+  const val = typeof raw === 'string' ? raw.trim() : '';
+  if (val === 'Administrator') return 'Administrator';
+  if (val === 'School Librarian' || val === 'Librarian') {
+    return 'School Librarian';
+  }
+  if (val === 'Assistant School Librarian') {
+    return 'Assistant School Librarian';
+  }
+  if (val === 'Librarian Support Staff') {
+    return 'Librarian Support Staff';
+  }
+  if (val === 'Teacher') return 'Teacher';
+  return 'Student';
+}
 
 export interface LibraryUser {
   id: number;
